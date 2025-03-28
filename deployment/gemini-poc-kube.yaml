@@ -1,0 +1,24 @@
+# Save the output of this file and use kubectl create -f to import
+# it into Kubernetes.
+#
+# Created with podman-5.4.1
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    io.kubernetes.cri-o.SandboxID/gemini-frontend-container: c538af021ecf8cbec61840652f3e0584c38112809a00f8bf3d7c75a7cdb6f965
+  creationTimestamp: "2025-03-28T20:35:14Z"
+  labels:
+    app: gemini-poc-pod
+  name: gemini-poc-pod
+spec:
+  containers:
+  - image: localhost/gemini-chat-frontend:0.1
+    name: gemini-frontend-container
+    ports:
+    - containerPort: 8000
+      hostPort: 8000
+    - containerPort: 8501
+      hostPort: 8501
+    securityContext: {}
+
