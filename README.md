@@ -42,7 +42,6 @@
 
 6.  **Setup Systemd Service (Optional but Recommended):**
     *   Copy the example service file... *(rest of this step remains the same)*emctl --user enable rag-poc.service
-        ```
 
 ## Running the Application
 
