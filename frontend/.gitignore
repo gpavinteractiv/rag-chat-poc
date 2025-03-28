@@ -1,0 +1,6 @@
+# /mnt/LAB/gemini-chat-poc/frontend/.gitignore
+venv_streamlit/
+__pycache__/
+*.pyc
+*.log
+.DS_Store

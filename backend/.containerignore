@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.venv # Exclude local venv if you have one
+venv # Exclude local venv if you have one
+*.log
+.env # Ensure secrets aren't accidentally copied if not mounted
