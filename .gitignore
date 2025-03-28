@@ -54,6 +54,8 @@ Thumbs.db
 # Might adjust later, but good starting point
 projects/**/*.pdf
 projects/**/*.docx
+projects/**/*.csv
+projects/**/*.txt
 # Keep project metadata files tracked
 # !projects/**/metadata.json
 # !projects/**/system_prompt.txt

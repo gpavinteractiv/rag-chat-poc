@@ -1,0 +1,11 @@
+module mycontainerfix 1.0;
+
+require {
+	type container_file_t;
+	type container_t;
+	class file { ioctl read };
+}
+
+#============= container_t ==============
+
+allow container_t container_file_t:file { ioctl read };

@@ -1,0 +1,74 @@
+# /mnt/LAB/gemini-chat-poc/backend/Containerfile
+
+# ---- Stage 1: Build Dependencies ----
+# Use an official Python base image (Sources: [1], [5], [7], [9], [10], [11], [12], [14], [16])
+# Using a specific version is recommended over 'latest'. Let's assume Python 3.11 based on Fedora 42 trends.
+# Using 'slim' variant reduces image size (Sources: [1], [5], [9], [11], [12])
+FROM python:3.11-slim as builder
+
+# Set working directory
+WORKDIR /opt/app
+
+# Install build dependencies if needed (e.g., for packages with C extensions)
+# RUN apt-get update && apt-get install -y --no-install-recommends build-essential gcc && rm -rf /var/lib/apt/lists/*
+# For now, assume no complex build deps are needed for our current packages. Add if build fails.
+
+# Install pipenv for better dependency management (Optional, but good practice)
+# Or stick with pip and requirements.txt for simplicity in PoC
+# Let's stick with pip for now
+
+# Copy only the requirements file first to leverage Docker/Podman cache (Sources: [1], [5], [9], [10], [11], [14])
+COPY requirements.txt .
+
+# Install dependencies into a virtual environment within the builder stage
+# Create venv (Sources: [1], [11], [16])
+RUN python -m venv /opt/venv
+# Activate venv and install (Ensure VENV is in PATH for subsequent RUN commands)
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir --upgrade pip
+# Use --no-cache-dir to reduce layer size (Sources: [1], [9], [11])
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---- Stage 2: Runtime Image ----
+# Use the same slim base image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Create a non-root user for security (Sources: [5], [7], [9], [10], [14])
+# Using numeric UID/GID is often recommended for OpenShift compatibility
+ARG USER_UID=1001
+ARG USER_GID=1001
+RUN groupadd --gid $USER_GID appgroup && \
+    useradd --uid $USER_UID --gid $USER_GID --create-home --shell /sbin/nologin appuser
+
+# Copy virtual environment from builder stage (Sources: [1], [5], [10], [11], [14])
+COPY --chown=appuser:appgroup --from=builder /opt/venv /opt/venv
+
+# Copy application code (Sources: [1], [5], [7], [9], [10], [11])
+# Copy everything from the backend directory context into the container's /app
+COPY --chown=appuser:appgroup . /app
+
+# Environment variables needed by the application
+# API key will be mounted via .env file or environment variable at runtime, NOT baked into image
+# ENV GOOGLE_API_KEY=YOUR_KEY_HERE # <-- DO NOT DO THIS
+
+# Ensure scripts are executable if needed (not needed for main.py)
+# RUN chmod +x /app/entrypoint.sh
+
+# Switch to the non-root user (Sources: [5], [7], [9], [10], [14])
+USER appuser
+
+# Expose the port the app runs on (Sources: [1], [5], [7], [9], [10], [11], [12], [14])
+EXPOSE 8000
+
+# Set the command to run the application using uvicorn (Sources: [7], [9], [12])
+# Activate venv for the command execution
+# Use 0.0.0.0 to listen on all interfaces within the container (Sources: [7], [12])
+# Use --no-reload in production containers (Sources: [9])
+# Add --log-level info (Sources: [7], [12])
+CMD ["/opt/venv/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+
+# Alternative CMD using shell form (less preferred than exec form above)
+# CMD . /opt/venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info

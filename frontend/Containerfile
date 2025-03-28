@@ -1,0 +1,44 @@
+# /mnt/LAB/gemini-chat-poc/frontend/Containerfile
+
+# Use a compatible Python base image
+# Match the backend's Python version for consistency if possible (e.g., 3.11)
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Create a non-root user (consistent with backend practice)
+ARG USER_UID=1002 # Use a different UID than backend for clarity, though not strictly required
+ARG USER_GID=1002
+RUN groupadd --gid $USER_GID appgroup_fe && \
+    useradd --uid $USER_UID --gid $USER_GID --create-home --shell /sbin/nologin appuser_fe
+
+# Copy requirements first for caching
+COPY requirements.txt .
+
+# Install dependencies (no venv needed inside container for single app)
+# Use --no-cache-dir
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+# Make sure .containerignore exists in frontend/ to avoid copying venv_streamlit
+COPY --chown=appuser_fe:appgroup_fe . /app
+
+# Switch to non-root user
+USER appuser_fe
+
+# Expose the default Streamlit port
+EXPOSE 8501
+
+# Environment variable for backend URL (will be localhost inside the pod)
+# Default is already 127.0.0.1 in app.py, which should work fine within the pod.
+# We *could* set it here explicitly if needed:
+# ENV BACKEND_API_URL="http://localhost:8000"
+
+# Command to run Streamlit
+# Use --server.address=0.0.0.0 to listen on all interfaces within the container
+# Use --server.port=8501 explicitly
+# (Source: Streamlit docs on configuration)
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.enableCORS=false"]
+# --server.enableCORS=false might be needed depending on network setup/browser access, can remove if not.

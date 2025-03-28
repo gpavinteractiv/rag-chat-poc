@@ -6,10 +6,10 @@ apiVersion: v1
 kind: Pod
 metadata:
   annotations:
-    bind-mount-options: /mnt/LAB/gemini-chat-poc/projects:Z
-    io.kubernetes.cri-o.SandboxID/gemini-backend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
-    io.kubernetes.cri-o.SandboxID/gemini-frontend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
-  creationTimestamp: "2025-03-28T20:51:00Z"
+    bind-mount-options: /mnt/LAB/gemini-chat-poc/backend/.env:Z
+    io.kubernetes.cri-o.SandboxID/gemini-backend-container: 9082853d7d0fc22bc6ce348771766f37d57a9be2a1363a34d9f7462d1318491a
+    io.kubernetes.cri-o.SandboxID/gemini-frontend-container: 9082853d7d0fc22bc6ce348771766f37d57a9be2a1363a34d9f7462d1318491a
+  creationTimestamp: "2025-03-28T21:09:19Z"
   labels:
     app: gemini-poc-pod
   name: gemini-poc-pod
@@ -24,22 +24,22 @@ spec:
       hostPort: 8501
     securityContext: {}
     volumeMounts:
-    - mountPath: /app/.env
-      name: mnt-lab-gemini-chat-poc-backend-.env-host-0
-      readOnly: true
     - mountPath: /app/../projects
-      name: mnt-lab-gemini-chat-poc-projects-host-1
+      name: mnt-lab-gemini-chat-poc-projects-host-0
+      readOnly: true
+    - mountPath: /app/.env
+      name: mnt-lab-gemini-chat-poc-backend-.env-host-1
       readOnly: true
   - image: localhost/gemini-chat-frontend:0.1
     name: gemini-frontend-container
     securityContext: {}
   volumes:
   - hostPath:
-      path: /mnt/LAB/gemini-chat-poc/backend/.env
-      type: File
-    name: mnt-lab-gemini-chat-poc-backend-.env-host-0
-  - hostPath:
       path: /mnt/LAB/gemini-chat-poc/projects
       type: Directory
-    name: mnt-lab-gemini-chat-poc-projects-host-1
+    name: mnt-lab-gemini-chat-poc-projects-host-0
+  - hostPath:
+      path: /mnt/LAB/gemini-chat-poc/backend/.env
+      type: File
+    name: mnt-lab-gemini-chat-poc-backend-.env-host-1
 
