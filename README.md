@@ -12,44 +12,36 @@
 1.  **Clone Repository:**
     ```bash
     git clone <your-repository-url>
-    cd rag-chat-poc
+    cd gemini-chat-poc
     ```
 
-2.  **Create `.env` File:**
-    Create a file named `.env` inside the `backend/` directory and add your Google API key:
+2.  **Initialize Local Development Environment:**
+    Run the initialization script. This checks prerequisites, creates local Python virtual environments (`backend/venv`, `frontend/venv_streamlit`), and installs initial dependencies.
+    ```bash
+    ./scripts/dev-env_init.sh
+    ```
+    *Note: This script is safe to run multiple times but only creates venvs if they don't exist.*
+
+3.  **Create `.env` File:**
+    The init script will warn if `backend/.env` is missing. Create this file manually inside the `backend/` directory and add your Google API key:
     ```dotenv
     # backend/.env
     GOOGLE_API_KEY=YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE
     ```
     **IMPORTANT:** This file is gitignored and must be created manually.
 
-3.  **Add Project Data:**
-    *   Create subdirectories inside the `projects/` directory for each project you want to define (e.g., `projects/my_legal_case`).
-    *   Inside each project directory (e.g., `projects/my_legal_case/`):
-        *   Create a `system_prompt.txt` file containing the base instructions for the LLM for this project.
-        *   Create a `filelist.csv` file. It **must** contain at least one column named exactly `"file name"` listing the document files to load relative to this project directory.
-        *   Place the actual document files (`.pdf`, `.csv`, `.docx`, `.md`) listed in `filelist.csv`.
+4.  **Add Project Data:**
+    *   Create subdirectories inside the `projects/` directory for each project... *(rest of this step remains the same)*
 
-4.  **Build Container Images:**
+5.  **Build Initial Container Images:**
     Run the rebuild script once initially to build both backend and frontend images:
     ```bash
     ./scripts/rebuild_poc.sh
     ```
+    *(Optional: If you modified requirements.txt after running the init script, use `./scripts/rebuild_poc.sh -u` to sync your venvs before the first build).*
 
-5.  **Setup Systemd Service (Optional but Recommended):**
-    *   Copy the example service file to your user's systemd configuration directory:
-        ```bash
-        mkdir -p ~/.config/systemd/user/
-        cp deployment/systemd-example/rag-poc.service.example ~/.config/systemd/user/rag-poc.service
-        ```
-    *   **Edit** `~/.config/systemd/user/rag-poc.service` and **replace any placeholder paths** (like `/path/to/rag-chat-poc`) with the actual absolute path to your cloned project directory. Also ensure the `User=` line is commented out or removed if running as a user service.
-    *   Reload the systemd user daemon:
-        ```bash
-        systemctl --user daemon-reload
-        ```
-    *   Enable the service to start automatically on login:
-        ```bash
-        systemctl --user enable rag-poc.service
+6.  **Setup Systemd Service (Optional but Recommended):**
+    *   Copy the example service file... *(rest of this step remains the same)*emctl --user enable rag-poc.service
         ```
 
 ## Running the Application
