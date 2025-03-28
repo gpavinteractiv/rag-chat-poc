@@ -1,4 +1,4 @@
-# /mnt/LAB/gemini-chat-poc/frontend/Containerfile
+# /mnt/LAB/rag-chat-poc/frontend/Containerfile
 
 # Use a compatible Python base image
 # Match the backend's Python version for consistency if possible (e.g., 3.11)

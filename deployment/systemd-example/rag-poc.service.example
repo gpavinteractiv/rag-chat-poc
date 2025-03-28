@@ -1,0 +1,28 @@
+# ~/.config/systemd/user/rag-poc.service
+
+[Unit]
+Description=RAG Chat PoC Pod Manager
+# Start after network is ready and user login is complete
+After=network-online.target default.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# IMPORTANT: Replace 'connectics' with your actual username if different
+#User=connectics
+WorkingDirectory=/mnt/LAB/rag-chat-poc
+
+# Execute the start script
+ExecStart=/mnt/LAB/rag-chat-poc/scripts/manage_pod.sh start
+
+# Command to stop the pod
+# Use the full path to podman found by 'which podman'
+ExecStop=/usr/bin/podman pod stop rag-poc-pod
+
+# Optional: Set PATH if podman isn't found by default systemd path
+# Environment="PATH=/bin:/usr/bin:$HOME/bin:$HOME/.local/bin"
+
+[Install]
+WantedBy=default.target

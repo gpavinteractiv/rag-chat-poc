@@ -1,4 +1,4 @@
-# /mnt/LAB/gemini-chat-poc/backend/Containerfile
+# /mnt/LAB/rag-chat-poc/backend/Containerfile
 
 # ---- Stage 1: Build Dependencies ----
 # Use an official Python base image (Sources: [1], [5], [7], [9], [10], [11], [12], [14], [16])

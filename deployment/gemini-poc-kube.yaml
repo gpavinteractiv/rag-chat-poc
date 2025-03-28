@@ -6,17 +6,17 @@ apiVersion: v1
 kind: Pod
 metadata:
   annotations:
-    bind-mount-options: /mnt/LAB/gemini-chat-poc/projects:Z
-    io.kubernetes.cri-o.SandboxID/gemini-backend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
-    io.kubernetes.cri-o.SandboxID/gemini-frontend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
+    bind-mount-options: /mnt/LAB/rag-chat-poc/projects:Z
+    io.kubernetes.cri-o.SandboxID/rag-backend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
+    io.kubernetes.cri-o.SandboxID/rag-frontend-container: f2849be5f310131f37fe264774c80d3c235a4530f5bed2d1c654383782f7d576
   creationTimestamp: "2025-03-28T20:51:00Z"
   labels:
-    app: gemini-poc-pod
-  name: gemini-poc-pod
+    app: rag-poc-pod
+  name: rag-poc-pod
 spec:
   containers:
-  - image: localhost/gemini-chat-backend:0.1
-    name: gemini-backend-container
+  - image: localhost/rag-chat-backend:0.1
+    name: rag-backend-container
     ports:
     - containerPort: 8000
       hostPort: 8000
@@ -25,21 +25,21 @@ spec:
     securityContext: {}
     volumeMounts:
     - mountPath: /app/.env
-      name: mnt-lab-gemini-chat-poc-backend-.env-host-0
+      name: mnt-lab-rag-chat-poc-backend-.env-host-0
       readOnly: true
     - mountPath: /app/../projects
-      name: mnt-lab-gemini-chat-poc-projects-host-1
+      name: mnt-lab-rag-chat-poc-projects-host-1
       readOnly: true
-  - image: localhost/gemini-chat-frontend:0.1
-    name: gemini-frontend-container
+  - image: localhost/rag-chat-frontend:0.1
+    name: rag-frontend-container
     securityContext: {}
   volumes:
   - hostPath:
-      path: /mnt/LAB/gemini-chat-poc/backend/.env
+      path: /mnt/LAB/rag-chat-poc/backend/.env
       type: File
-    name: mnt-lab-gemini-chat-poc-backend-.env-host-0
+    name: mnt-lab-rag-chat-poc-backend-.env-host-0
   - hostPath:
-      path: /mnt/LAB/gemini-chat-poc/projects
+      path: /mnt/LAB/rag-chat-poc/projects
       type: Directory
-    name: mnt-lab-gemini-chat-poc-projects-host-1
+    name: mnt-lab-rag-chat-poc-projects-host-1
 

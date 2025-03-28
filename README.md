@@ -12,7 +12,7 @@
 1.  **Clone Repository:**
     ```bash
     git clone <your-repository-url>
-    cd gemini-chat-poc
+    cd rag-chat-poc
     ```
 
 2.  **Create `.env` File:**
@@ -40,16 +40,16 @@
     *   Copy the example service file to your user's systemd configuration directory:
         ```bash
         mkdir -p ~/.config/systemd/user/
-        cp deployment/systemd-example/gemini-poc.service.example ~/.config/systemd/user/gemini-poc.service
+        cp deployment/systemd-example/rag-poc.service.example ~/.config/systemd/user/rag-poc.service
         ```
-    *   **Edit** `~/.config/systemd/user/gemini-poc.service` and **replace any placeholder paths** (like `/path/to/gemini-chat-poc`) with the actual absolute path to your cloned project directory. Also ensure the `User=` line is commented out or removed if running as a user service.
+    *   **Edit** `~/.config/systemd/user/rag-poc.service` and **replace any placeholder paths** (like `/path/to/rag-chat-poc`) with the actual absolute path to your cloned project directory. Also ensure the `User=` line is commented out or removed if running as a user service.
     *   Reload the systemd user daemon:
         ```bash
         systemctl --user daemon-reload
         ```
     *   Enable the service to start automatically on login:
         ```bash
-        systemctl --user enable gemini-poc.service
+        systemctl --user enable rag-poc.service
         ```
 
 ## Running the Application
@@ -60,19 +60,19 @@ There are two primary ways to run the application:
 
 *   **Start:**
     ```bash
-    systemctl --user start gemini-poc.service
+    systemctl --user start rag-poc.service
     ```
 *   **Stop:**
     ```bash
-    systemctl --user stop gemini-poc.service
+    systemctl --user stop rag-poc.service
     ```
 *   **Check Status:**
     ```bash
-    systemctl --user status gemini-poc.service
+    systemctl --user status rag-poc.service
     ```
 *   **View Logs:**
     ```bash
-    journalctl --user -u gemini-poc.service -f
+    journalctl --user -u rag-poc.service -f
     ```
 
 **Method 2: Using the Management Script Directly**
@@ -101,9 +101,9 @@ If you make changes to the backend (`backend/`) or frontend (`frontend/`) code o
 *   **Option 1: Manual Rebuild**
     Use the rebuild script. This stops the application, removes the old pod/containers, and builds new images. You will need to restart the application afterwards.
     ```bash
-    # Stop the application if running (e.g., systemctl --user stop gemini-poc.service)
+    # Stop the application if running (e.g., systemctl --user stop rag-poc.service)
     ./scripts/rebuild_poc.sh
-    # Restart the application (e.g., systemctl --user start gemini-poc.service)
+    # Restart the application (e.g., systemctl --user start rag-poc.service)
     ```
 
 *   **Option 2: Automated Rebuild & Restart**
@@ -114,7 +114,7 @@ If you make changes to the backend (`backend/`) or frontend (`frontend/`) code o
 
 ## Deployment Notes (OpenShift/Kubernetes)
 
-*   The `deployment/gemini-poc-kube.yaml` file is auto-generated from the local Podman pod setup.
+*   The `deployment/rag-poc-kube.yaml` file is auto-generated from the local Podman pod setup.
 *   **This file requires significant adaptation before it can be applied to a real OpenShift or Kubernetes cluster.** Key changes needed include:
     *   **Image Registry:** Push images to a registry accessible by the cluster (e.g., OpenShift internal registry, Quay.io) and update the `image:` fields.
     *   **Configuration:** Replace the `.env` file volume mount with Kubernetes `Secrets`.

@@ -11,7 +11,7 @@ set -u
 set -o pipefail
 
 # --- Configuration ---
-readonly SERVICE_NAME="gemini-poc.service"
+readonly SERVICE_NAME="rag-poc.service"
 
 # Determine project root directory (assuming script is in PROJECT_ROOT/scripts)
 readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )

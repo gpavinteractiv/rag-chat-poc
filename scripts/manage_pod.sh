@@ -8,11 +8,11 @@ set -u
 set -o pipefail
 
 # --- Configuration ---
-readonly POD_NAME="gemini-poc-pod"
-readonly BACKEND_CONTAINER_NAME="gemini-backend-container" # The --name we assign
-readonly FRONTEND_CONTAINER_NAME="gemini-frontend-container" # The --name we assign
-readonly BACKEND_IMAGE="localhost/gemini-chat-backend:0.1"
-readonly FRONTEND_IMAGE="localhost/gemini-chat-frontend:0.1"
+readonly POD_NAME="rag-poc-pod"
+readonly BACKEND_CONTAINER_NAME="rag-backend-container" # The --name we assign
+readonly FRONTEND_CONTAINER_NAME="rag-frontend-container" # The --name we assign
+readonly BACKEND_IMAGE="localhost/rag-chat-backend:0.1"
+readonly FRONTEND_IMAGE="localhost/rag-chat-frontend:0.1"
 
 # Determine project root directory (assuming script is in PROJECT_ROOT/scripts)
 readonly SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )

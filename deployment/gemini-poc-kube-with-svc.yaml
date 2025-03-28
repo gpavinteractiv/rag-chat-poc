@@ -7,8 +7,8 @@ kind: Service
 metadata:
   creationTimestamp: "2025-03-28T20:36:34Z"
   labels:
-    app: gemini-poc-pod
-  name: gemini-poc-pod
+    app: rag-poc-pod
+  name: rag-poc-pod
 spec:
   ports:
   - name: "8000"
@@ -20,22 +20,22 @@ spec:
     port: 8501
     targetPort: 8501
   selector:
-    app: gemini-poc-pod
+    app: rag-poc-pod
   type: NodePort
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   annotations:
-    io.kubernetes.cri-o.SandboxID/gemini-frontend-container: c538af021ecf8cbec61840652f3e0584c38112809a00f8bf3d7c75a7cdb6f965
+    io.kubernetes.cri-o.SandboxID/rag-frontend-container: c538af021ecf8cbec61840652f3e0584c38112809a00f8bf3d7c75a7cdb6f965
   creationTimestamp: "2025-03-28T20:36:34Z"
   labels:
-    app: gemini-poc-pod
-  name: gemini-poc-pod
+    app: rag-poc-pod
+  name: rag-poc-pod
 spec:
   containers:
-  - image: localhost/gemini-chat-frontend:0.1
-    name: gemini-frontend-container
+  - image: localhost/rag-chat-frontend:0.1
+    name: rag-frontend-container
     ports:
     - containerPort: 8000
     - containerPort: 8501

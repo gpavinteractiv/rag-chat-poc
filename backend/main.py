@@ -1,4 +1,4 @@
-# /mnt/LAB/gemini-chat-poc/backend/main.py
+# /mnt/LAB/rag-chat-poc/backend/main.py
 
 import os
 import logging
@@ -47,7 +47,7 @@ else:
         # --- Model Selection ---
         # Confirmed working in previous step, keep using it.
         # If switching to OpenRouter, this client/model name would change.
-        LLM_MODEL_NAME = 'models/gemini-2.5-pro-exp-03-25'
+        LLM_MODEL_NAME = 'models/rag-2.5-pro-exp-03-25'
         # Initialize the model instance once (can be reused)
         llm_model = genai.GenerativeModel(LLM_MODEL_NAME)
         logger.info(f"Using LLM model: {LLM_MODEL_NAME}")

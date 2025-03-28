@@ -1,4 +1,4 @@
-# /mnt/LAB/gemini-chat-poc/frontend/app.py
+# /mnt/LAB/rag-chat-poc/frontend/app.py
 
 import streamlit as st
 import httpx # For making API calls to the backend
