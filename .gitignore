@@ -59,3 +59,4 @@ projects/**/*.txt
 # Keep project metadata files tracked
 # !projects/**/metadata.json
 # !projects/**/system_prompt.txt
+.aider*
