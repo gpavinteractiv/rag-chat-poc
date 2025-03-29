@@ -68,7 +68,7 @@ is_container_running_in_pod() {
 
 # --- Start Script Logic ---
 start_all() {
-    log "Starting Gemini PoC Pod management script..."
+    log "Starting RAG PoC Pod management script..."
 
     # Check required files/dirs exist
     if [ ! -f "$ENV_FILE" ]; then log_error "Required environment file not found: $ENV_FILE"; exit 1; fi
@@ -157,14 +157,14 @@ start_all() {
          log "Frontend container '$FRONTEND_CONTAINER_NAME' created successfully."
     fi
 
-    log "Gemini PoC Pod startup script completed successfully."
+    log "RAG PoC Pod startup script completed successfully."
     log "You should be able to access the frontend at http://localhost:8501"
     $PODMAN ps --pod --filter name="$POD_NAME"
 }
 
 # --- Stop Script Logic ---
 stop_all() {
-    log "Stopping Gemini PoC Pod '$POD_NAME'..."
+    log "Stopping RAG PoC Pod '$POD_NAME'..."
     if $PODMAN pod exists "$POD_NAME"; then
         if ! $PODMAN pod stop "$POD_NAME"; then
             log_error "Failed to stop pod '$POD_NAME'. It might have already been stopped."
