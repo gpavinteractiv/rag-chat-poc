@@ -27,6 +27,8 @@ readonly BACKEND_REQ_FILE="$BACKEND_DIR/requirements.txt"
 readonly FRONTEND_REQ_FILE="$FRONTEND_DIR/requirements.txt"
 readonly ENV_FILE="$BACKEND_DIR/.env"
 readonly TEMPLATE_ENV_FILE="$BACKEND_DIR/template.env"
+readonly MODELS_FILE="$BACKEND_DIR/models.txt" # Added
+readonly TEMPLATE_MODELS_FILE="$BACKEND_DIR/template.models.txt" # Added
 
 
 # --- Helper Functions ---
@@ -72,22 +74,42 @@ if [ ! -f "$BACKEND_REQ_FILE" ]; then log_error "Backend requirements file not f
 if [ ! -f "$FRONTEND_REQ_FILE" ]; then log_error "Frontend requirements file not found: $FRONTEND_REQ_FILE"; exit 1; fi
 log "Requirements files found."
 
-log "Checking for backend .env file..."
+log "Checking for backend config files (.env, models.txt)..."
+# Check .env file
 if [ ! -f "$ENV_FILE" ]; then
     log_warn "Backend .env file not found at: $ENV_FILE"
     if [ -f "$TEMPLATE_ENV_FILE" ]; then
         log "Copying template environment file to $ENV_FILE..."
         cp "$TEMPLATE_ENV_FILE" "$ENV_FILE"
         log_success "Copied $TEMPLATE_ENV_FILE to $ENV_FILE."
-        log_warn "IMPORTANT: Please edit $ENV_FILE and replace the placeholder GOOGLE_API_KEY with your actual key."
+        log_warn "IMPORTANT: Please edit $ENV_FILE and replace placeholder API keys."
     else
         log_error "Template environment file $TEMPLATE_ENV_FILE not found. Cannot create $ENV_FILE."
-        log_error "Please create $ENV_FILE manually with your GOOGLE_API_KEY."
-        exit 1 # Make it fatal if template is missing and .env doesn't exist
+        log_error "Please create $ENV_FILE manually with your API keys."
+        exit 1
     fi
 else
     log ".env file found."
 fi
+
+# Check models.txt file (Added)
+if [ ! -f "$MODELS_FILE" ]; then
+    log_warn "Backend models file not found at: $MODELS_FILE"
+    if [ -f "$TEMPLATE_MODELS_FILE" ]; then
+        log "Copying template models file to $MODELS_FILE..."
+        cp "$TEMPLATE_MODELS_FILE" "$MODELS_FILE"
+        log_success "Copied $TEMPLATE_MODELS_FILE to $MODELS_FILE."
+        log_warn "IMPORTANT: Please edit $MODELS_FILE to configure your desired models."
+    else
+        log_error "Template models file $TEMPLATE_MODELS_FILE not found. Cannot create $MODELS_FILE."
+        log_error "Please create $MODELS_FILE manually, following the format in the template."
+        # Decide if this is fatal. Let's make it non-fatal for now, backend will log errors if missing.
+        log_warn "Backend might not load models correctly without $MODELS_FILE."
+    fi
+else
+    log "models.txt file found."
+fi
+
 
 # 3. Create Backend Virtual Environment and Install Dependencies
 log "Checking backend virtual environment: $BACKEND_VENV_DIR"
@@ -145,8 +167,9 @@ fi
 log_success "--------------------------------------------------------"
 log_success "Local Development Environment Initialization Complete!"
 log_success "Virtual environments are set up."
+
+# Check .env configuration status
 if [ -f "$ENV_FILE" ]; then
-    # Check if placeholders are still there
     google_key_configured=true
     openrouter_key_configured=true
     if grep -q "YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE" "$ENV_FILE"; then
@@ -166,8 +189,21 @@ if [ -f "$ENV_FILE" ]; then
          log_success "OPENROUTER_API_KEY seems configured in '$ENV_FILE'."
     fi
 else
-     log_error "'$ENV_FILE' is missing. Backend may not function correctly." # Should not happen due to earlier check, but good to have.
+     log_error "'$ENV_FILE' is missing. Backend may not function correctly."
 fi
+
+# Check models.txt configuration status (Added)
+if [ -f "$MODELS_FILE" ]; then
+     # Simple check if it's just the template content (check for example line)
+     if grep -q "# Example:" "$MODELS_FILE" && grep -q "google:gemini-1.5-flash-latest" "$MODELS_FILE"; then
+          log_warn "Reminder: Ensure '$MODELS_FILE' is configured with your desired models (template content detected)."
+     else
+          log_success "'$MODELS_FILE' seems to be configured."
+     fi
+else
+     log_warn "'$MODELS_FILE' is missing. Backend might not load models correctly."
+fi
+
 log_success "You can now build the container images using './scripts/rebuild_poc.sh'."
 log_success "--------------------------------------------------------"
 
