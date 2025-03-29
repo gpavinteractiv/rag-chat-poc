@@ -22,13 +22,17 @@
     ```
     *Note: This script is safe to run multiple times but only creates venvs if they don't exist.*
 
-3.  **Create `.env` File:**
-    The init script will warn if `backend/.env` is missing. Create this file manually inside the `backend/` directory and add your Google API key:
+3.  **Configure API Key (`.env` file):**
+    The initialization script (`dev-env_init.sh`) checks for the `backend/.env` file.
+    *   If `backend/.env` **does not exist**, the script will automatically copy the template file `backend/template.env` to `backend/.env`.
+    *   You **must** then edit the newly created `backend/.env` file and replace the placeholder `YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE` with your actual Google API key.
     ```dotenv
-    # backend/.env
-    GOOGLE_API_KEY=YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE
+    # backend/.env (Edit this file after it's copied)
+    GOOGLE_API_KEY=YOUR_ACTUAL_GOOGLE_API_KEY
     ```
-    **IMPORTANT:** This file is gitignored and must be created manually.
+    *   If `backend/.env` **already exists**, the script will leave it untouched. Ensure it contains your valid API key.
+
+    **IMPORTANT:** The `backend/.env` file is gitignored and contains sensitive credentials. Do not commit it to version control.
 
 4.  **Add Project Data:**
     *   Create subdirectories inside the `projects/` directory for each project... *(rest of this step remains the same)*

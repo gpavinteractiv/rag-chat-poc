@@ -26,6 +26,7 @@ readonly FRONTEND_VENV_DIR="$FRONTEND_DIR/venv_streamlit"
 readonly BACKEND_REQ_FILE="$BACKEND_DIR/requirements.txt"
 readonly FRONTEND_REQ_FILE="$FRONTEND_DIR/requirements.txt"
 readonly ENV_FILE="$BACKEND_DIR/.env"
+readonly TEMPLATE_ENV_FILE="$BACKEND_DIR/template.env"
 
 
 # --- Helper Functions ---
@@ -74,10 +75,16 @@ log "Requirements files found."
 log "Checking for backend .env file..."
 if [ ! -f "$ENV_FILE" ]; then
     log_warn "Backend .env file not found at: $ENV_FILE"
-    log_warn "Please create this file and add your GOOGLE_API_KEY."
-    # Optionally create a template:
-    # echo "GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY_HERE" > "$ENV_FILE.example"
-    # log_warn "Created $ENV_FILE.example as a template."
+    if [ -f "$TEMPLATE_ENV_FILE" ]; then
+        log "Copying template environment file to $ENV_FILE..."
+        cp "$TEMPLATE_ENV_FILE" "$ENV_FILE"
+        log_success "Copied $TEMPLATE_ENV_FILE to $ENV_FILE."
+        log_warn "IMPORTANT: Please edit $ENV_FILE and replace the placeholder GOOGLE_API_KEY with your actual key."
+    else
+        log_error "Template environment file $TEMPLATE_ENV_FILE not found. Cannot create $ENV_FILE."
+        log_error "Please create $ENV_FILE manually with your GOOGLE_API_KEY."
+        exit 1 # Make it fatal if template is missing and .env doesn't exist
+    fi
 else
     log ".env file found."
 fi
@@ -138,7 +145,16 @@ fi
 log_success "--------------------------------------------------------"
 log_success "Local Development Environment Initialization Complete!"
 log_success "Virtual environments are set up."
-log_success "Ensure '$ENV_FILE' contains your API key."
+if [ -f "$ENV_FILE" ]; then
+    # Check if the placeholder is still there
+    if grep -q "YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE" "$ENV_FILE"; then
+        log_warn "Reminder: Ensure '$ENV_FILE' contains your actual API key (placeholder detected)."
+    else
+        log_success "'$ENV_FILE' seems to be configured."
+    fi
+else
+     log_error "'$ENV_FILE' is missing. Backend may not function correctly." # Should not happen due to earlier check, but good to have.
+fi
 log_success "You can now build the container images using './scripts/rebuild_poc.sh'."
 log_success "--------------------------------------------------------"
 
