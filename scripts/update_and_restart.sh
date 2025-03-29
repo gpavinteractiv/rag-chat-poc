@@ -34,6 +34,7 @@ log_success() {
 
 # --- Main Logic ---
 log "Starting Update and Restart process..."
+log "This script orchestrates stopping the systemd service, rebuilding images via rebuild_poc.sh, and restarting the service."
 
 # 1. Check if rebuild script exists and is executable
 if [ ! -x "$REBUILD_SCRIPT" ]; then
@@ -49,13 +50,13 @@ log "Stop command issued for service $SERVICE_NAME."
 # Add a small delay to allow resources to be released before rebuild tries removing things
 sleep 2
 
-# 3. Run the rebuild script
-log "Executing rebuild script: $REBUILD_SCRIPT"
+# 3. Run the rebuild script, passing through any arguments (e.g., -u)
+log "Executing rebuild script: $REBUILD_SCRIPT $@"
 # The rebuild script itself has error handling and will exit if it fails (due to set -e)
-"$REBUILD_SCRIPT"
+"$REBUILD_SCRIPT" "$@" # Pass arguments like -u
 log "Rebuild script completed."
 
-# 4. Start the systemd user service
+# 4. Start the systemd user service (which runs manage_pod.sh start)
 log "Attempting to start systemd user service: $SERVICE_NAME..."
 if systemctl --user start "$SERVICE_NAME"; then
     log_success "Service $SERVICE_NAME started successfully."
