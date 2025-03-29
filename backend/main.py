@@ -57,24 +57,29 @@ if not google_configured and not openrouter_configured:
      raise RuntimeError("No valid API keys found for either Google or OpenRouter. Application cannot function.")
 
 # --- Model Definitions ---
-# Use simplified names or identifiers expected by the respective APIs
-GOOGLE_MODELS = ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"] # Check Google AI Studio for exact names if needed
-OPENROUTER_MODELS = [
-    "deepseek/deepseek-chat",
-    "google/gemini-pro-1.5", # OpenRouter's identifier for Gemini 1.5 Pro
-    "anthropic/claude-3.5-sonnet",
-    # Add more models as needed, ensure they exist on OpenRouter
-    # "mistralai/mistral-large-latest"
-]
-# Combine into a dictionary for the API
+# Load models from environment variables
+google_models_str = os.getenv("GOOGLE_MODELS", "")
+openrouter_models_str = os.getenv("OPENROUTER_MODELS", "")
+
+# Parse comma-separated strings into lists, filtering out empty strings
+GOOGLE_MODELS = [model.strip() for model in google_models_str.split(',') if model.strip()] if google_models_str else []
+OPENROUTER_MODELS = [model.strip() for model in openrouter_models_str.split(',') if model.strip()] if openrouter_models_str else []
+
+logger.info(f"Loaded Google Models from env: {GOOGLE_MODELS}")
+logger.info(f"Loaded OpenRouter Models from env: {OPENROUTER_MODELS}")
+
+# Combine into a dictionary for the API, only if the provider is configured AND models are loaded
 AVAILABLE_MODELS = {}
-if google_configured:
-    # Google model names often include 'models/' prefix when used with their library
-    # Let's store the usable name for the library vs the display name if different
-    # For simplicity now, assume the list contains names usable by genai.GenerativeModel()
+if google_configured and GOOGLE_MODELS:
     AVAILABLE_MODELS["google"] = GOOGLE_MODELS
-if openrouter_configured:
+    logger.info(f"Google provider configured with models: {GOOGLE_MODELS}")
+elif google_configured and not GOOGLE_MODELS:
+     logger.warning("Google provider configured but no GOOGLE_MODELS found in .env.")
+if openrouter_configured and OPENROUTER_MODELS:
     AVAILABLE_MODELS["openrouter"] = OPENROUTER_MODELS
+    logger.info(f"OpenRouter provider configured with models: {OPENROUTER_MODELS}")
+elif openrouter_configured and not OPENROUTER_MODELS:
+     logger.warning("OpenRouter provider configured but no OPENROUTER_MODELS found in .env.")
 
 
 # --- Pydantic Models ---

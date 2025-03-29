@@ -142,14 +142,27 @@ available_models_data = get_available_models()
 selected_provider = None
 selected_model = None
 
+# Define desired default models
+DEFAULT_MODELS = {
+    "google": "gemini-2.5-pro-exp-03-25",
+    "openrouter": "google/gemini-2.5-pro-exp-03-25:free"
+}
+
 if not available_models_data:
     st.sidebar.warning("No models found or backend unavailable.")
 else:
     available_providers = list(available_models_data.keys())
 
-    # Initialize session state for provider if it doesn't exist or is invalid
+    # Initialize session state for provider - Prefer 'google', then 'openrouter', then first
     if "selected_provider" not in st.session_state or st.session_state.selected_provider not in available_providers:
-        st.session_state.selected_provider = available_providers[0] if available_providers else None
+        if "google" in available_providers:
+            st.session_state.selected_provider = "google"
+        elif "openrouter" in available_providers:
+            st.session_state.selected_provider = "openrouter"
+        elif available_providers:
+            st.session_state.selected_provider = available_providers[0]
+        else:
+            st.session_state.selected_provider = None
 
     selected_provider = st.sidebar.selectbox(
         "Choose LLM Provider:",
@@ -164,14 +177,28 @@ else:
              st.sidebar.error(f"No models listed for provider '{selected_provider}'.")
              selected_model = None
         else:
+            # Determine the default model for this provider
+            preferred_default = DEFAULT_MODELS.get(selected_provider)
+            actual_default = None
+            if preferred_default and preferred_default in models_for_provider:
+                actual_default = preferred_default
+            elif models_for_provider: # Fallback to first model if preferred default not found
+                actual_default = models_for_provider[0]
+
             # Initialize or update selected model based on provider change or if invalid
             if "selected_model" not in st.session_state or st.session_state.selected_model not in models_for_provider:
-                 st.session_state.selected_model = models_for_provider[0] # Default to first model of provider
+                 st.session_state.selected_model = actual_default # Use determined default
+
+            # Ensure the selectbox reflects the session state, especially after initialization
+            current_model_index = 0
+            if st.session_state.selected_model in models_for_provider:
+                current_model_index = models_for_provider.index(st.session_state.selected_model)
 
             selected_model = st.sidebar.selectbox(
                 f"Choose Model ({selected_provider}):",
                 options=models_for_provider,
                 key="selected_model",
+                index=current_model_index # Set index based on current session state
             )
     else:
         selected_model = None # No provider selected

@@ -159,11 +159,22 @@ stop_apps() {
     fi
 }
 
+# --- Restart Function ---
+restart_apps() {
+    log "Restarting development servers..."
+    stop_apps
+    log "Waiting a moment before starting again..."
+    sleep 2 # Give a brief pause
+    start_apps
+    log_success "Development servers restarted."
+}
+
 # --- Usage Instructions ---
 usage() {
-    echo "Usage: $0 {start|stop}"
-    echo "  start: Starts the backend (uvicorn) and frontend (streamlit) servers in the background."
-    echo "  stop:  Stops the background servers using PIDs stored in $PID_FILE."
+    echo "Usage: $0 {start|stop|restart}"
+    echo "  start:   Starts the backend (uvicorn) and frontend (streamlit) servers in the background."
+    echo "  stop:    Stops the background servers using PIDs stored in $PID_FILE."
+    echo "  restart: Stops the servers if running, then starts them again."
     exit 1
 }
 
@@ -180,6 +191,9 @@ case "$COMMAND" in
         ;;
     stop)
         stop_apps
+        ;;
+    restart)
+        restart_apps
         ;;
     *)
         log_error "Invalid command: $COMMAND"
