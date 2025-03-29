@@ -216,7 +216,7 @@ st.sidebar.caption(f"Backend API: {BACKEND_URL}")
 
 
 # --- Main App Layout (with potential Dev Bar) ---
-main_col, dev_bar_col = st.columns([0.8, 0.2]) # Adjust ratio as needed
+main_col, dev_bar_col = st.columns([0.7, 0.3]) # Adjust ratio as needed
 
 with main_col:
     st.title("📄🤖 RAG Chat PoC")
