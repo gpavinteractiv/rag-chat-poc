@@ -89,19 +89,44 @@ Once the application is running (using either method), open your web browser and
 
 If you make changes to the backend (`backend/`) or frontend (`frontend/`) code or their dependencies (`requirements.txt`), you need to rebuild the container images.
 
-*   **Option 1: Manual Rebuild**
-    Use the rebuild script. This stops the application, removes the old pod/containers, and builds new images. You will need to restart the application afterwards.
+The `rebuild_poc.sh` script handles stopping the application, cleaning up old containers/pods, and building new images.
+
+*   **Option 1: Rebuild Only**
+    Use this if you only changed code and not dependencies, or if you manually managed your local virtual environments.
     ```bash
-    # Stop the application if running (e.g., systemctl --user stop rag-poc.service)
+    # Make sure the application is stopped first (e.g., systemctl --user stop rag-poc.service)
     ./scripts/rebuild_poc.sh
-    # Restart the application (e.g., systemctl --user start rag-poc.service)
+    # Restart the application after rebuild (e.g., systemctl --user start rag-poc.service)
     ```
 
-*   **Option 2: Automated Rebuild & Restart**
-    Use the combined script to stop the service, rebuild, and start the service again.
+*   **Option 2: Recreate Local Venvs, Update Dependencies & Rebuild**
+    Use this to ensure a clean local development state. This option **completely removes** your existing local Python virtual environments (`backend/venv` and `frontend/venv_streamlit`), recreates them, reinstalls dependencies directly from the current `requirements.txt` files, and then freezes the resulting package versions back into `requirements.txt` *before* rebuilding the container images.
+    ```bash
+    # WARNING: This removes backend/venv and frontend/venv_streamlit first!
+    # Make sure the application is stopped (e.g., systemctl --user stop rag-poc.service)
+    ./scripts/rebuild_poc.sh --update-deps
+    # OR use the short flag:
+    # ./scripts/rebuild_poc.sh -u
+    # Restart the application after rebuild (e.g., systemctl --user start rag-poc.service)
+    ```
+    *Note: This option effectively replaces the need for the separate `./scripts/dev-env_init.sh` if run with `-u`, as it recreates the venvs anyway.*
+
+*   **Option 3: Force Rebuild Without Cache (`--no-cache`)**
+    Use this flag (optionally combined with `-u`) if you suspect build cache corruption or want to ensure all build steps are re-run from scratch, ignoring any cached layers. This can fix errors like "Digest did not match" or issues where code/dependency changes aren't reflected in the image despite modifications.
+    ```bash
+    # Rebuild without cache
+    ./scripts/rebuild_poc.sh --no-cache
+
+    # Recreate venvs AND rebuild without cache
+    ./scripts/rebuild_poc.sh -u --no-cache
+    ```
+
+*   **Option 4: Automated Rebuild & Restart**
+    Use the `update_and_restart.sh` script to combine stopping the service, running the basic rebuild (without dependency update or cache clearing), and starting the service again.
     ```bash
     ./scripts/update_and_restart.sh
     ```
+    *Note: To include the dependency update or no-cache options in this automated flow, you would need to modify `update_and_restart.sh` to pass the desired flags to `rebuild_poc.sh`.*
 
 ## Deployment Notes (OpenShift/Kubernetes)
 
