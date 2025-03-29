@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="Gemini Chat PoC",
+    page_title="RAG Chat PoC",
     page_icon="🤖",
     layout="wide"
 )
@@ -83,8 +83,8 @@ def call_chat_api(project_name: str, query: str) -> Optional[Dict]:
 
 # --- Main App UI ---
 
-st.title("📄🤖 Gemini Large Context Chat PoC")
-st.caption(f"A proof-of-concept chat agent using Gemini 2.5 Pro via a FastAPI backend ({BACKEND_URL}).")
+st.title("📄🤖 RAG Chat PoC")
+st.caption(f"A proof-of-concept chat agent using Gemini via a FastAPI backend ({BACKEND_URL}).")
 
 # --- Project Selection ---
 st.sidebar.header("Project Selection")

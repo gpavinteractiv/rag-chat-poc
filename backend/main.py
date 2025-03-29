@@ -300,8 +300,8 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
 
 # --- FastAPI App Instance ---
 app = FastAPI(
-    title="Gemini Chat PoC Backend",
-    description="Proof-of-Concept API for interacting with Gemini Pro using a large context window.",
+    title="RAG Chat PoC Backend",
+    description="Proof-of-Concept API for interacting with Gemini using project-specific documents as context.",
     version="0.1.0",
 )
 logger.info("FastAPI app instance created.")
@@ -313,7 +313,7 @@ logger.info("FastAPI app instance created.")
 async def read_root():
     """ Basic endpoint to check if the server is running. """
     logger.info("Root endpoint '/' accessed.")
-    return {"message": "Welcome to the Gemini Chat PoC Backend!"}
+    return {"message": "Welcome to the RAG Chat PoC Backend!"}
 
 @app.get("/ping")
 async def ping():
