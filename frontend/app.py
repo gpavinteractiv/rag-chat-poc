@@ -112,12 +112,6 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
         st.error(f"An unexpected error occurred: {e}")
         return None
 
-
-# --- Main App UI ---
-
-st.title("📄🤖 RAG Chat PoC")
-st.caption(f"A proof-of-concept chat agent using LLMs via a FastAPI backend ({BACKEND_URL}).")
-
 # --- Sidebar Setup ---
 st.sidebar.header("Configuration")
 
@@ -203,102 +197,122 @@ else:
     else:
         selected_model = None # No provider selected
 
-# --- Chat Interface Area ---
-st.header(f"Chat with Project: {selected_project if selected_project else 'N/A'}")
+# Optional: Clear chat button
+if st.sidebar.button("Clear Chat History", key="clear_chat"):
+     if "messages" in st.session_state:
+          st.session_state.messages = []
+          logger.info("Chat history cleared by user.")
+          st.rerun()
 
-if selected_project and selected_provider and selected_model:
-    st.info(f"Using Model: **{selected_provider} / {selected_model}**")
+# --- Dev Bar Toggle ---
+if "show_dev_bar" not in st.session_state:
+    st.session_state.show_dev_bar = False
 
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    # Store current project/model config to detect changes
-    current_config_key = f"{selected_project}_{selected_provider}_{selected_model}"
-    if "current_config" not in st.session_state:
-         st.session_state.current_config = current_config_key
-
-    # Clear chat history if project or model config changes
-    if st.session_state.current_config != current_config_key:
-        logger.info(f"Config changed from {st.session_state.current_config} to {current_config_key}. Clearing chat history.")
-        st.session_state.messages = []
-        st.session_state.current_config = current_config_key
-        st.warning("Project or Model changed. Chat history cleared.") # Inform user
-
-    # Display existing chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            # Display model used for assistant messages if available
-            if message["role"] == "assistant" and "model_used" in message:
-                 st.caption(f"Model: {message['model_used']}")
-
-    # Chat input field
-    if prompt := st.chat_input(f"Ask '{selected_project}' using {selected_model}...", key="chat_input_box"):
-        # 1. Add user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # 2. Call the backend API with selected provider and model
-        logger.info(f"User query for project '{selected_project}' using '{selected_provider}/{selected_model}': {prompt}")
-        with st.spinner(f"Asking {selected_model}..."):
-            api_response = call_chat_api(
-                project_name=selected_project,
-                query=prompt,
-                provider=selected_provider,
-                model_name=selected_model
-            )
-
-        # 3. Add assistant response
-        if api_response and "response" in api_response:
-            assistant_response_content = api_response["response"]
-            sources = api_response.get("sources_consulted", [])
-            model_used = api_response.get("model_used", f"{selected_provider}/{selected_model}") # Fallback
-
-            # Append sources to the content for display
-            if sources:
-                assistant_response_content += f"\n\n*Sources consulted: {', '.join(sources)}*"
-
-            # Store message with model info
-            assistant_message = {
-                "role": "assistant",
-                "content": assistant_response_content,
-                "model_used": model_used
-            }
-            st.session_state.messages.append(assistant_message)
-
-            # Display message
-            with st.chat_message("assistant"):
-                st.markdown(assistant_message["content"])
-                st.caption(f"Model: {assistant_message['model_used']}") # Display model used
-
-        else:
-             logger.warning("No valid response received from backend API.")
-             # Error is displayed by call_chat_api via st.error
-
-
-    # Optional: Clear chat button
-    if st.sidebar.button("Clear Chat History", key="clear_chat"):
-         if "messages" in st.session_state:
-              st.session_state.messages = []
-              logger.info("Chat history cleared by user.")
-              st.rerun()
-
-
-elif not selected_project:
-    st.info("Select a project from the sidebar to start chatting.")
-    if "messages" in st.session_state: del st.session_state.messages
-    if "current_config" in st.session_state: del st.session_state.current_config
-elif not available_models_data:
-     st.warning("Model selection is unavailable. Cannot start chat.")
-     if "messages" in st.session_state: del st.session_state.messages
-     if "current_config" in st.session_state: del st.session_state.current_config
-else: # Project selected but model/provider missing
-     st.warning("Select a provider and model from the sidebar.")
-     if "messages" in st.session_state: del st.session_state.messages
-     if "current_config" in st.session_state: del st.session_state.current_config
-
+show_dev_bar = st.sidebar.toggle("Show Dev Bar", key="show_dev_bar")
 
 # --- Display Backend URL ---
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Backend API: {BACKEND_URL}")
+
+
+# --- Main App Layout (with potential Dev Bar) ---
+main_col, dev_bar_col = st.columns([0.8, 0.2]) # Adjust ratio as needed
+
+with main_col:
+    st.title("📄🤖 RAG Chat PoC")
+    st.caption(f"A proof-of-concept chat agent using LLMs via a FastAPI backend ({BACKEND_URL}).")
+
+    # --- Chat Interface Area ---
+    st.header(f"Chat with Project: {selected_project if selected_project else 'N/A'}")
+
+    if selected_project and selected_provider and selected_model:
+        st.info(f"Using Model: **{selected_provider} / {selected_model}**")
+
+        # Initialize chat history
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+        # Store current project/model config to detect changes
+        current_config_key = f"{selected_project}_{selected_provider}_{selected_model}"
+        if "current_config" not in st.session_state:
+             st.session_state.current_config = current_config_key
+
+        # Clear chat history if project or model config changes
+        if st.session_state.current_config != current_config_key:
+            logger.info(f"Config changed from {st.session_state.current_config} to {current_config_key}. Clearing chat history.")
+            st.session_state.messages = []
+            st.session_state.current_config = current_config_key
+            st.warning("Project or Model changed. Chat history cleared.") # Inform user
+
+        # Display existing chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                # Display model used for assistant messages if available
+                if message["role"] == "assistant" and "model_used" in message:
+                     st.caption(f"Model: {message['model_used']}")
+
+        # Chat input field
+        if prompt := st.chat_input(f"Ask '{selected_project}' using {selected_model}...", key="chat_input_box"):
+            # 1. Add user message
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            # 2. Call the backend API with selected provider and model
+            logger.info(f"User query for project '{selected_project}' using '{selected_provider}/{selected_model}': {prompt}")
+            with st.spinner(f"Asking {selected_model}..."):
+                api_response = call_chat_api(
+                    project_name=selected_project,
+                    query=prompt,
+                    provider=selected_provider,
+                    model_name=selected_model
+                )
+
+            # 3. Add assistant response
+            if api_response and "response" in api_response:
+                assistant_response_content = api_response["response"]
+                sources = api_response.get("sources_consulted", [])
+                model_used = api_response.get("model_used", f"{selected_provider}/{selected_model}") # Fallback
+
+                # Append sources to the content for display
+                if sources:
+                    assistant_response_content += f"\n\n*Sources consulted: {', '.join(sources)}*"
+
+                # Store message with model info
+                assistant_message = {
+                    "role": "assistant",
+                    "content": assistant_response_content,
+                    "model_used": model_used
+                }
+                st.session_state.messages.append(assistant_message)
+
+                # Display message
+                with st.chat_message("assistant"):
+                    st.markdown(assistant_message["content"])
+                    st.caption(f"Model: {assistant_message['model_used']}") # Display model used
+
+            else:
+                 logger.warning("No valid response received from backend API.")
+                 # Error is displayed by call_chat_api via st.error
+
+    elif not selected_project:
+        st.info("Select a project from the sidebar to start chatting.")
+        if "messages" in st.session_state: del st.session_state.messages
+        if "current_config" in st.session_state: del st.session_state.current_config
+    elif not available_models_data:
+         st.warning("Model selection is unavailable. Cannot start chat.")
+         if "messages" in st.session_state: del st.session_state.messages
+         if "current_config" in st.session_state: del st.session_state.current_config
+    else: # Project selected but model/provider missing
+         st.warning("Select a provider and model from the sidebar.")
+         if "messages" in st.session_state: del st.session_state.messages
+         if "current_config" in st.session_state: del st.session_state.current_config
+
+# --- Dev Bar Content (Conditional) ---
+if st.session_state.show_dev_bar:
+    with dev_bar_col:
+        st.header("Dev Bar")
+        st.write("This is the development bar.")
+        # Add more dev-specific info/tools here later
+        st.write("Session State:")
+        st.json(st.session_state) # Example: Display session state

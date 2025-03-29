@@ -37,7 +37,16 @@
     **IMPORTANT:** The `backend/.env` file is gitignored and contains sensitive credentials. Do not commit it to version control.
 
 4.  **Add Project Data:**
-    *   Create subdirectories inside the `projects/` directory for each project... *(rest of this step remains the same)*
+    *   The `projects/` directory holds the data for different RAG contexts. Each subdirectory represents a separate project.
+    *   A `projects/_template/` directory is provided as a starting point for new projects. It contains:
+        *   `system_prompt.txt`: A default system prompt for the LLM. Customize this for your project's needs.
+        *   `filelist.csv`: An empty CSV file. You **must** edit this file and add the relative paths (within the project directory) of the documents you want the LLM to use as context under a column named `file name`.
+    *   **To create a new project:**
+        1.  Copy the `projects/_template/` directory and rename the copy (e.g., `projects/MyNewProject/`).
+        2.  Place your context documents (PDF, DOCX, MD, CSV) inside your new project directory (e.g., `projects/MyNewProject/`).
+        3.  Edit `projects/MyNewProject/filelist.csv` and list the filenames of your documents under the `file name` column header.
+        4.  (Optional) Edit `projects/MyNewProject/system_prompt.txt` to tailor the LLM's instructions.
+    *   **Note:** Directories within `projects/` that start with an underscore (`_`), like `_template`, are ignored by the backend and will not appear in the project list in the UI.
 
 5.  **Build Initial Container Images:**
     Run the rebuild script once initially to build both backend and frontend images:

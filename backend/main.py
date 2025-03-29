@@ -331,7 +331,8 @@ async def list_projects():
 
     try:
         for item in PROJECTS_DIR.iterdir():
-            if item.is_dir():
+            # Skip directories starting with an underscore
+            if item.is_dir() and not item.name.startswith('_'):
                 file_count = 0
                 desc = "Default project description."
                 filelist_csv = item / "filelist.csv"
