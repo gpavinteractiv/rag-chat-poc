@@ -1,0 +1,6 @@
+# backend/models.txt
+# Format: PROVIDER:model1,model2,model3...
+# One provider per line. Lines starting with # are ignored.
+
+google:gemini-2.5-pro-exp-03-25,gemini-2.0-flash
+openrouter:deepseek/deepseek-chat-v3-0324:free,google/gemini-2.5-pro-exp-03-25:free,deepseek/deepseek-r1,anthropic/claude-3.7-sonnet:thinking

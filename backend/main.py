@@ -56,30 +56,99 @@ else:
 if not google_configured and not openrouter_configured:
      raise RuntimeError("No valid API keys found for either Google or OpenRouter. Application cannot function.")
 
-# --- Model Definitions ---
-# Load models from environment variables
-google_models_str = os.getenv("GOOGLE_MODELS", "")
-openrouter_models_str = os.getenv("OPENROUTER_MODELS", "")
+# --- Model Loading Function ---
+MODELS_FILE_PATH = Path(__file__).parent / "models.txt"
 
-# Parse comma-separated strings into lists, filtering out empty strings
-GOOGLE_MODELS = [model.strip() for model in google_models_str.split(',') if model.strip()] if google_models_str else []
-OPENROUTER_MODELS = [model.strip() for model in openrouter_models_str.split(',') if model.strip()] if openrouter_models_str else []
+def _load_available_models() -> Dict[str, List[str]]:
+    """Loads available models from the models.txt file."""
+    global google_configured, openrouter_configured # Allow modification if needed on refresh
+    logger.info(f"Attempting to load models from {MODELS_FILE_PATH}...")
 
-logger.info(f"Loaded Google Models from env: {GOOGLE_MODELS}")
-logger.info(f"Loaded OpenRouter Models from env: {OPENROUTER_MODELS}")
+    # Check API keys status (still needed to know if provider is usable)
+    google_api_key = os.getenv("GOOGLE_API_KEY") # Keep checking keys
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
 
-# Combine into a dictionary for the API, only if the provider is configured AND models are loaded
-AVAILABLE_MODELS = {}
-if google_configured and GOOGLE_MODELS:
-    AVAILABLE_MODELS["google"] = GOOGLE_MODELS
-    logger.info(f"Google provider configured with models: {GOOGLE_MODELS}")
-elif google_configured and not GOOGLE_MODELS:
-     logger.warning("Google provider configured but no GOOGLE_MODELS found in .env.")
-if openrouter_configured and OPENROUTER_MODELS:
-    AVAILABLE_MODELS["openrouter"] = OPENROUTER_MODELS
-    logger.info(f"OpenRouter provider configured with models: {OPENROUTER_MODELS}")
-elif openrouter_configured and not OPENROUTER_MODELS:
-     logger.warning("OpenRouter provider configured but no OPENROUTER_MODELS found in .env.")
+    google_configured = False
+    if google_api_key and google_api_key != "YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE":
+        try:
+            # Re-configure in case key changed, though genai might handle this internally
+            genai.configure(api_key=google_api_key)
+            logger.info("Google Generative AI client re-configured (or confirmed).")
+            google_configured = True
+        except Exception as e:
+            logger.error(f"Failed to re-configure Google Generative AI client during refresh: {e}")
+    else:
+        logger.warning("GOOGLE_API_KEY not found or is placeholder during refresh.")
+
+    openrouter_configured = False
+    if openrouter_api_key and openrouter_api_key != "YOUR_OPENROUTER_API_KEY_HERE":
+        logger.info("OpenRouter API Key confirmed during refresh.")
+        openrouter_configured = True
+    else:
+        logger.warning("OPENROUTER_API_KEY not found or is placeholder.")
+
+    # Load models from models.txt
+    loaded_models = {}
+    if not MODELS_FILE_PATH.is_file():
+        logger.error(f"Models file not found at {MODELS_FILE_PATH}. No models loaded.")
+        return {}
+
+    try:
+        with open(MODELS_FILE_PATH, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    provider, models_str = parts
+                    provider = provider.strip().lower()
+                    models_list = [model.strip() for model in models_str.split(',') if model.strip()]
+                    if not models_list:
+                         logger.warning(f"No models listed for provider '{provider}' in {MODELS_FILE_PATH.name}")
+                         continue
+
+                    # Only add models if the corresponding provider is configured
+                    if provider == "google" and google_configured:
+                        loaded_models["google"] = models_list
+                        logger.info(f"Loaded Google models from file: {models_list}")
+                    elif provider == "openrouter" and openrouter_configured:
+                        loaded_models["openrouter"] = models_list
+                        logger.info(f"Loaded OpenRouter models from file: {models_list}")
+                    else:
+                         logger.warning(f"Provider '{provider}' found in {MODELS_FILE_PATH.name}, but its API key is not configured or valid. Models skipped.")
+                else:
+                    logger.warning(f"Skipping malformed line in {MODELS_FILE_PATH.name}: {line}")
+
+    except Exception as e:
+        logger.error(f"Error reading or parsing {MODELS_FILE_PATH.name}: {e}", exc_info=True)
+        return {} # Return empty if file reading fails
+
+    if not loaded_models:
+         logger.warning(f"No valid and configured models loaded from {MODELS_FILE_PATH.name}.")
+
+    return loaded_models
+
+# --- Initial Model Load ---
+AVAILABLE_MODELS = _load_available_models()
+
+
+# --- Configuration Refresh Logic ---
+def refresh_configuration():
+    """Reloads API keys from .env and models from models.txt."""
+    global AVAILABLE_MODELS
+    logger.info("Refreshing configuration...")
+    try:
+        # Force reload of .env file for API keys
+        load_dotenv(override=True)
+        logger.info(".env file reloaded for API keys.")
+        # Update the global model list by re-reading models.txt
+        AVAILABLE_MODELS = _load_available_models()
+        logger.info("Available models updated from models.txt.")
+        return True
+    except Exception as e:
+        logger.error(f"Error during configuration refresh: {e}", exc_info=True)
+        return False
 
 
 # --- Pydantic Models ---
@@ -318,6 +387,19 @@ async def get_available_models():
         for provider, models in AVAILABLE_MODELS.items()
     ]
     return AvailableModelsResponse(providers=providers_list)
+
+
+@app.post("/refresh")
+async def refresh_models():
+    """
+    Reloads configuration from the .env file, primarily updating the list of available models.
+    """
+    logger.info("'/refresh' endpoint accessed.")
+    success = refresh_configuration()
+    if success:
+        return {"message": "Configuration refreshed successfully."}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to refresh configuration. Check backend logs.")
 
 
 @app.get("/projects", response_model=List[ProjectInfo])

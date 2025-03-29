@@ -1,0 +1,14 @@
+# backend/template.models.txt
+# This file defines the available models for the RAG backend.
+#
+# Format:
+# PROVIDER_NAME:model_id_1,model_id_2,another_model/id
+#
+# - Replace PROVIDER_NAME with 'google' or 'openrouter'.
+# - List comma-separated model IDs after the colon.
+# - Lines starting with # are ignored.
+# - Ensure the corresponding API key for the provider is set in .env
+#
+# Example:
+# google:gemini-1.5-flash-latest,gemini-1.5-pro-latest
+# openrouter:google/gemini-flash-1.5,anthropic/claude-3-haiku
