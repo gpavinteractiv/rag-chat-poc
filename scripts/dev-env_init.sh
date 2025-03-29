@@ -146,11 +146,24 @@ log_success "--------------------------------------------------------"
 log_success "Local Development Environment Initialization Complete!"
 log_success "Virtual environments are set up."
 if [ -f "$ENV_FILE" ]; then
-    # Check if the placeholder is still there
+    # Check if placeholders are still there
+    google_key_configured=true
+    openrouter_key_configured=true
     if grep -q "YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE" "$ENV_FILE"; then
-        log_warn "Reminder: Ensure '$ENV_FILE' contains your actual API key (placeholder detected)."
-    else
-        log_success "'$ENV_FILE' seems to be configured."
+        log_warn "Reminder: Ensure '$ENV_FILE' contains your actual GOOGLE_API_KEY (placeholder detected)."
+        google_key_configured=false
+    fi
+     if grep -q "YOUR_OPENROUTER_API_KEY_HERE" "$ENV_FILE"; then
+        log_warn "Reminder: Ensure '$ENV_FILE' contains your actual OPENROUTER_API_KEY (placeholder detected)."
+        openrouter_key_configured=false
+    fi
+
+    if $google_key_configured && $openrouter_key_configured; then
+         log_success "'$ENV_FILE' seems to be configured with API keys."
+    elif $google_key_configured; then
+        log_success "GOOGLE_API_KEY seems configured in '$ENV_FILE'."
+    elif $openrouter_key_configured; then
+         log_success "OPENROUTER_API_KEY seems configured in '$ENV_FILE'."
     fi
 else
      log_error "'$ENV_FILE' is missing. Backend may not function correctly." # Should not happen due to earlier check, but good to have.

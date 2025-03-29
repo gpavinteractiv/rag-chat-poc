@@ -5,6 +5,7 @@
 *   **Git:** For cloning the repository.
 *   **Python 3:** Primarily for creating virtual environments locally if modifying dependencies (Container uses Python 3.11).
 *   **Google API Key:** A valid API key for Google AI Studio or Google Cloud AI Platform with access to the desired Gemini model.
+*   **OpenRouter API Key:** A valid API key from [OpenRouter.ai](https://openrouter.ai/) if you intend to use models hosted there.
 *   **Operating System:** Developed on Fedora 42, compatible with CentOS Stream 9 / RHEL 9 and other Linux distributions with Podman support. SELinux enabled is assumed (uses `:Z` flag on volumes).
 
 ## Setup
@@ -25,12 +26,13 @@
 3.  **Configure API Key (`.env` file):**
     The initialization script (`dev-env_init.sh`) checks for the `backend/.env` file.
     *   If `backend/.env` **does not exist**, the script will automatically copy the template file `backend/template.env` to `backend/.env`.
-    *   You **must** then edit the newly created `backend/.env` file and replace the placeholder `YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE` with your actual Google API key.
+    *   You **must** then edit the newly created `backend/.env` file and replace the placeholders `YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE` and `YOUR_OPENROUTER_API_KEY_HERE` with your actual API keys. If you don't plan to use one of the providers, you can leave its placeholder, but the application might log warnings or errors if you try to select a model from that provider later.
     ```dotenv
     # backend/.env (Edit this file after it's copied)
     GOOGLE_API_KEY=YOUR_ACTUAL_GOOGLE_API_KEY
+    OPENROUTER_API_KEY=YOUR_ACTUAL_OPENROUTER_API_KEY
     ```
-    *   If `backend/.env` **already exists**, the script will leave it untouched. Ensure it contains your valid API key.
+    *   If `backend/.env` **already exists**, the script will leave it untouched. Ensure it contains your valid API keys for the providers you intend to use.
 
     **IMPORTANT:** The `backend/.env` file is gitignored and contains sensitive credentials. Do not commit it to version control.
 
