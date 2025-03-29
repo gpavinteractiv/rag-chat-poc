@@ -136,10 +136,14 @@ update_venv_deps() {
 
 
 # --- Main Rebuild Logic ---
-log "Starting RAG PoC rebuild process..." # Updated log message
+log "Starting RAG PoC rebuild process..."
+log "This script stops/removes the existing pod and containers, then rebuilds the container images."
+log "It does NOT restart the application. Use manage_pod.sh or the systemd service for that."
 if [ "$UPDATE_DEPS" = true ]; then log "Local dependency update requested (force recreating venvs)."; fi
 
-# 1. Stop existing pod (if running)
+# 1. Stop existing pod (if running) - Necessary for standalone execution.
+# Note: If called by update_and_restart.sh, the systemd service stop already issued this command.
+# Running it again here is generally harmless (podman handles 'already stopped' state).
 log "Checking for existing pod '$POD_NAME'..." # Uses updated POD_NAME variable
 if $PODMAN pod exists "$POD_NAME"; then
     log "Pod '$POD_NAME' exists. Attempting to stop..."
