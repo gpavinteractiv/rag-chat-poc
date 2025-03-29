@@ -59,4 +59,9 @@ projects/**/*.txt
 # Keep project metadata files tracked
 # !projects/**/metadata.json
 # !projects/**/system_prompt.txt
+
+# Explicitly track files in the template directory
+!projects/_template/system_prompt.txt
+!projects/_template/filelist.csv
+
 .aider*
