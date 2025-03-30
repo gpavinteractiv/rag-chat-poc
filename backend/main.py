@@ -485,9 +485,9 @@ async def chat_with_project(
          raise HTTPException(status_code=400, detail=f"Invalid model specified for provider {request.provider}: {request.model_name}. Available: {AVAILABLE_MODELS[request.provider]}")
 
     # 2. Check API Key for selected provider
-    if request.provider == "google" and not google_configured:
+    if request.provider == "google" and (not google_configured or google_api_key == "YOUR_GOOGLE_AI_STUDIO_API_KEY_HERE"):
          raise HTTPException(status_code=400, detail="Google provider selected, but GOOGLE_API_KEY is not configured correctly in the backend.")
-    if request.provider == "openrouter" and not openrouter_configured:
+    if request.provider == "openrouter" and (not openrouter_configured or openrouter_api_key == "YOUR_OPENROUTER_API_KEY_HERE"):
          raise HTTPException(status_code=400, detail="OpenRouter provider selected, but OPENROUTER_API_KEY is not configured correctly in the backend.")
 
     # 3. Validate and get project path
