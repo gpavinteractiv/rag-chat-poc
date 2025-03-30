@@ -64,8 +64,10 @@ projects/**/*.txt
 # !projects/**/metadata.json
 # !projects/**/system_prompt.txt
 
-# Explicitly track files in the template directory
-!projects/_template/system_prompt.txt
-!projects/_template/filelist.csv
+# Track specific files in the template directory
+!projects/_template/             # Un-ignore the directory itself
+projects/_template/*             # Ignore everything inside by default
+!projects/_template/system_prompt.txt # Re-include this file
+!projects/_template/filelist.csv    # Re-include this file
 
 .aider*
