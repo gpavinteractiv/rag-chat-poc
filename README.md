@@ -126,8 +126,45 @@ The `rebuild_poc.sh` script handles stopping the application, cleaning up old co
     ```
     *Note: This option effectively replaces the need for the separate `./scripts/dev-env_init.sh` if run with `-u`, as it recreates the venvs anyway.*
 
-*   **Option 3: Force Rebuild Without Cache (`--no-cache`)**
-    Use this flag (optionally combined with `-u`) if you suspect build cache corruption or want to ensure all build steps are re-run from scratch, ignoring any cached layers. This can fix errors like "Digest did not match" or issues where code/dependency changes aren't reflected in the image despite modifications.
+6.  **Calculate Initial Token Counts (Offline):**
+    After setting up your projects and adding documents to `filelist.csv`, run the token calculation script. This script parses each document listed in the `filelist.csv` for *all* projects and adds/updates a `token_count` column in each CSV file. This count is currently informational and used in the UI's Dev Bar.
+    ```bash
+    # Run from the project root directory
+    ./scripts/update_all_token_counts.sh
+    ```
+    *Note: This script needs the backend virtual environment activated, which it handles internally. It may take some time depending on the number and size of your documents.*
+
+7.  **Setup Systemd Service (Optional but Recommended):**
+    *   Copy the example service file to your systemd user directory:
+        ```bash
+        mkdir -p ~/.config/systemd/user/
+        cp deployment/systemd-example/rag-poc.service.example ~/.config/systemd/user/rag-poc.service
+        ```
+    *   **Edit the copied service file (`~/.config/systemd/user/rag-poc.service`)** and replace the placeholder `/path/to/your/cloned/repo/gemini-chat-poc` with the **absolute path** to where you cloned this repository. For example:
+        ```ini
+        [Unit]
+        Description=RAG Chat PoC Podman Pod
+        After=network.target
+
+        [Service]
+        WorkingDirectory=/home/youruser/dev/gemini-chat-poc # <-- CHANGE THIS PATH
+        ExecStart=/usr/bin/podman pod start rag-poc-pod
+        ExecStop=/usr/bin/podman pod stop rag-poc-pod
+        Restart=on-failure
+
+        [Install]
+        WantedBy=default.target
+        ```
+    *   Reload the systemd user daemon:
+        ```bash
+        systemctl --user daemon-reload
+        ```
+    *   Enable the service to start on login (optional):
+        ```bash
+        systemctl --user enable rag-poc.service
+        ```
+
+## Running the Application
     ```bash
     # Rebuild without cache
     ./scripts/rebuild_poc.sh --no-cache
