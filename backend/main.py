@@ -697,11 +697,11 @@ async def chat_with_project(
 # --- Model Details Endpoint ---
 
 # Cache OpenRouter model data for 1 hour
-openrouter_model_cache = TTLCache(maxsize=1, ttl=3600)
+# openrouter_model_cache = TTLCache(maxsize=1, ttl=3600) # Removed cache due to async issues
 
-@cached(openrouter_model_cache)
+# @cached(openrouter_model_cache) # Removed cache decorator - caused "cannot reuse already awaited coroutine" error
 async def get_openrouter_models_data() -> Optional[Dict]:
-    """Fetches and caches the full model list from OpenRouter."""
+    """Fetches the full model list from OpenRouter. (Caching removed due to async issues)."""
     logger.info("Fetching full model list from OpenRouter API...")
     openrouter_models_url = "https://openrouter.ai/api/v1/models"
     try:
