@@ -18,8 +18,8 @@ import asyncio # For potential async file operations later
 import json # For OpenRouter payload
 import tiktoken # Added for token counting
 from cachetools import cached, TTLCache # For caching OpenRouter model data
-# Import parsing functions from the new utility module
-from .parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
+# Import parsing functions using absolute import from backend perspective
+from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
 
 # --- Configuration & Setup ---
 # Set logging level to DEBUG to capture detailed info for pricing issue
@@ -161,6 +161,7 @@ class ProjectInfo(BaseModel):
     name: str
     description: Optional[str] = "No description available."
     file_count: int
+    total_document_tokens: Optional[int] = None # Add field for pre-calculated token sum
 
 class ChatMessage(BaseModel):
     role: str # e.g., "user", "model"
@@ -402,37 +403,63 @@ async def list_projects():
             # Skip directories starting with an underscore
             if item.is_dir() and not item.name.startswith('_'):
                 file_count = 0
+                total_tokens = None # Initialize total tokens
                 desc = "Default project description."
                 filelist_csv = item / "filelist.csv"
                 prompt_file = item / "system_prompt.txt"
 
                 if filelist_csv.is_file():
                     try:
-                        # Ensure we use the correct column name 'file_name' as updated previously
-                        df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True)
-                        file_count = len(df["file_name"].dropna())
-                        logger.debug(f"Counted {file_count} files for project '{item.name}' from {filelist_csv.name}")
+                        # Read filelist, attempting to get both file_name and token_count
+                        df = pd.read_csv(filelist_csv, skipinitialspace=True)
+                        if "file_name" in df.columns:
+                            file_count = len(df["file_name"].dropna())
+                            logger.debug(f"Counted {file_count} files for project '{item.name}' from {filelist_csv.name}")
+                        else:
+                             logger.warning(f"Column 'file_name' not found in {filelist_csv.name} for project '{item.name}'. File count set to 0.")
+                             file_count = 0
+
+                        # Calculate total tokens if column exists and has valid numbers
+                        if "token_count" in df.columns:
+                             # Convert to numeric, coercing errors to NaN, then sum valid numbers
+                             valid_tokens = pd.to_numeric(df["token_count"], errors='coerce').dropna()
+                             if not valid_tokens.empty:
+                                 total_tokens = int(valid_tokens.sum())
+                                 logger.debug(f"Calculated total document tokens for project '{item.name}': {total_tokens}")
+                             else:
+                                 logger.warning(f"'token_count' column found but contains no valid numbers for project '{item.name}'.")
+                        else:
+                             logger.warning(f"'token_count' column not found in {filelist_csv.name} for project '{item.name}'. Cannot calculate total document tokens.")
+
                     except ValueError as ve:
-                        # Log specific error if 'file_name' column is missing
-                        logger.warning(f"Could not count files for project '{item.name}': Column 'file_name' not found in {filelist_csv.name}. Error: {ve}")
-                        file_count = 0 # Default to 0 on error
+                        # Log specific error if 'file_name' column is missing (though handled above now)
+                        logger.warning(f"ValueError reading {filelist_csv.name} for project '{item.name}': {ve}")
+                        file_count = 0
+                        total_tokens = None
                     except pd.errors.EmptyDataError:
-                        logger.warning(f"Could not count files for project '{item.name}': {filelist_csv.name} is empty.")
-                        file_count = 0 # Default to 0 if empty
+                        logger.warning(f"{filelist_csv.name} is empty for project '{item.name}'.")
+                        file_count = 0
+                        total_tokens = None
                     except Exception as e:
-                        # Log other potential errors during counting
-                        logger.error(f"Error counting files for project '{item.name}' from {filelist_csv.name}: {e}", exc_info=True)
-                        file_count = 0 # Default to 0 on error
+                        logger.error(f"Error reading or processing {filelist_csv.name} for project '{item.name}': {e}", exc_info=True)
+                        file_count = 0
+                        total_tokens = None
                 else:
-                    logger.warning(f"filelist.csv not found for project '{item.name}', cannot count files.")
+                    logger.warning(f"filelist.csv not found for project '{item.name}'. Cannot count files or tokens.")
                     file_count = 0
+                    total_tokens = None
 
-                # Description logic remains unchanged (currently just default)
+                # Description logic remains unchanged
                 if prompt_file.is_file():
-                     try: pass # Keep default desc
-                     except Exception: pass # Keep this pass for description part
+                     try: pass
+                     except Exception: pass
 
-                projects.append(ProjectInfo(name=item.name, description=desc, file_count=file_count))
+                projects.append(ProjectInfo(
+                    name=item.name,
+                    description=desc,
+                    file_count=file_count,
+                    total_document_tokens=total_tokens # Add the calculated sum
+                ))
         logger.info(f"Found {len(projects)} projects.")
         return projects
     except Exception as e:

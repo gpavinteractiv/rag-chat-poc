@@ -36,6 +36,7 @@ class ProjectInfo(TypedDict):
     name: str
     description: Optional[str]
     file_count: int
+    total_document_tokens: Optional[int] # Add field for pre-calculated token sum
 
 # --- Helper Functions ---
 
@@ -162,13 +163,13 @@ st.sidebar.header("Configuration")
 available_projects_info: List[ProjectInfo] = get_projects()
 selected_project = None
 selected_project_doc_count = 0
-# Removed selected_project_base_tokens initialization
+selected_project_total_doc_tokens = None # Initialize total doc tokens
 
 if not available_projects_info:
     st.sidebar.warning("No projects found or backend unavailable.")
     if "selected_project" in st.session_state: del st.session_state.selected_project
     if "selected_project_doc_count" in st.session_state: del st.session_state.selected_project_doc_count
-    # Removed clearing of project_base_tokens state
+    if "total_document_tokens" in st.session_state: del st.session_state.total_document_tokens # Clear tokens too
 else:
     available_project_names = [p["name"] for p in available_projects_info]
 
@@ -180,13 +181,15 @@ else:
     selected_project_info = next((p for p in available_projects_info if p["name"] == current_selection_name), None)
     if selected_project_info:
         selected_project_doc_count = selected_project_info.get("file_count", 0)
+        selected_project_total_doc_tokens = selected_project_info.get("total_document_tokens") # Get total tokens
         st.session_state.selected_project_doc_count = selected_project_doc_count
-        # Removed logic to fetch base tokens here
+        st.session_state.total_document_tokens = selected_project_total_doc_tokens # Store in session state
     else:
         logger.warning(f"Selected project '{current_selection_name}' not found in fetched list.")
         selected_project_doc_count = 0
+        selected_project_total_doc_tokens = None
         st.session_state.selected_project_doc_count = 0
-        # Removed clearing of project_base_tokens state
+        if "total_document_tokens" in st.session_state: del st.session_state.total_document_tokens
 
 
     selected_project = st.sidebar.selectbox(
@@ -412,9 +415,15 @@ if st.session_state.show_dev_bar:
         st.header("Dev Bar")
         st.subheader("Project Info")
         if selected_project:
-             # Reverted to only showing document count
-             st.metric(label="Documents", value=st.session_state.get("selected_project_doc_count", "N/A"))
-             st.caption(f"Project: '{selected_project}'")
+             # Display doc count and total doc tokens side-by-side
+             col1_proj, col2_proj = st.columns(2)
+             with col1_proj:
+                 st.metric(label="Documents", value=st.session_state.get("selected_project_doc_count", "N/A"))
+             with col2_proj:
+                 total_doc_tokens = st.session_state.get("total_document_tokens")
+                 token_display_value = f"{total_doc_tokens:,}" if total_doc_tokens is not None else "N/A"
+                 st.metric(label="Input Context (Est.)", value=token_display_value)
+             st.caption(f"Project: '{selected_project}' (Tokens from filelist.csv)") # Add project name and clarification
         else:
              st.write("No project selected.")
 
