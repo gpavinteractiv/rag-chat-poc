@@ -49,6 +49,10 @@ yarn-error.log*
 # OS specific
 .DS_Store
 Thumbs.db
+.dev_pids
+
+# Logs
+*.log
 
 # Project Specific Documents (Sensitive or Large)
 # Might adjust later, but good starting point
@@ -59,4 +63,11 @@ projects/**/*.txt
 # Keep project metadata files tracked
 # !projects/**/metadata.json
 # !projects/**/system_prompt.txt
+
+# Track specific files in the template directory
+!projects/_template/             # Un-ignore the directory itself
+projects/_template/*             # Ignore everything inside by default
+!projects/_template/system_prompt.txt # Re-include this file
+!projects/_template/filelist.csv    # Re-include this file
+
 .aider*

@@ -1,0 +1,14 @@
+# backend/template.models.txt
+# This file defines the available models for the RAG backend.
+#
+# Format:
+# PROVIDER_NAME:model_id_1,model_id_2,another_model/id
+#
+# - Replace PROVIDER_NAME with 'google' or 'openrouter'.
+# - List comma-separated model IDs after the colon.
+# - Lines starting with # are ignored.
+# - Ensure the corresponding API key for the provider is set in .env
+#
+# Example:
+google:gemini-2.5-pro-exp-03-25,gemini-2.0-flash
+openrouter:deepseek/deepseek-chat-v3-0324:free,google/gemini-2.5-pro-exp-03-25:free,deepseek/deepseek-r1,anthropic/claude-3.7-sonnet:thinking
