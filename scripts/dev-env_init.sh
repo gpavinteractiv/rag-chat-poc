@@ -31,6 +31,7 @@ readonly MODELS_FILE="$BACKEND_DIR/models.txt" # Added
 readonly TEMPLATE_MODELS_FILE="$BACKEND_DIR/template.models.txt" # Added
 
 
+
 # --- Helper Functions ---
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - INFO - $1"
@@ -204,6 +205,7 @@ else
      log_warn "'$MODELS_FILE' is missing. Backend might not load models correctly."
 fi
 
+log_success "Ensure '$ENV_FILE' contains your API key."
 log_success "You can now build the container images using './scripts/rebuild_poc.sh'."
 log_success "--------------------------------------------------------"
 

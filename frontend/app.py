@@ -156,8 +156,11 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
         st.error(f"An unexpected error occurred: {e}")
         return None
 
-# --- Sidebar Setup ---
-st.sidebar.header("Configuration")
+      
+# --- Main App UI ---
+st.title("📄🤖 RAG Chat PoC")
+st.caption(f"A proof-of-concept chat agent using Gemini via a FastAPI backend ({BACKEND_URL}).")
+
 
 # --- Project Selection ---
 available_projects_info: List[ProjectInfo] = get_projects()
