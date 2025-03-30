@@ -16,9 +16,11 @@ import pandas as pd # CSV/Excel parsing
 import traceback # For detailed error logging
 import asyncio # For potential async file operations later
 import json # For OpenRouter payload
+import tiktoken # Added for token counting
+from cachetools import cached, TTLCache # For caching OpenRouter model data
 
 # --- Configuration & Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s') # Default level set to INFO
 logger = logging.getLogger(__name__)
 load_dotenv()
 logger.info(".env file loaded.")
@@ -162,15 +164,18 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    query: str
-    provider: Literal["google", "openrouter"] # Added provider selection
-    model_name: str # Added model name selection
+    # Added example values using Field for better FastAPI /docs UI experience
+    query: str = Field(..., example="Summarize the key points of the provided documents.")
+    provider: Literal["google", "openrouter"] = Field(..., example="openrouter") # Added provider selection
+    model_name: str = Field(..., example="mistralai/mistral-7b-instruct") # Added model name selection
     # history: Optional[List[ChatMessage]] = None # Keep commented for now
 
 class ChatResponse(BaseModel):
     response: str
     sources_consulted: List[str] # List of filenames used in context
     model_used: str # Added to confirm which model responded
+    input_tokens: Optional[int] = None # Added token counts
+    output_tokens: Optional[int] = None # Added token counts
 
 class DocumentContent(BaseModel):
     filename: str
@@ -183,6 +188,19 @@ class ModelInfo(BaseModel):
 
 class AvailableModelsResponse(BaseModel):
     providers: List[ModelInfo]
+
+class ModelDetails(BaseModel):
+    context_window: Optional[int] = None
+    input_token_limit: Optional[int] = None # Specific to Google
+    output_token_limit: Optional[int] = None # Specific to Google
+    input_cost_per_million_tokens: Optional[float] = None
+    output_cost_per_million_tokens: Optional[float] = None
+    notes: Optional[str] = None # For additional info like pricing source
+
+class ModelDetailsResponse(BaseModel):
+    provider: str
+    model_name: str
+    details: ModelDetails
 
 
 # --- File Parsing Utilities ---
@@ -296,10 +314,10 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
 
     try:
         try:
-             df = pd.read_csv(filelist_csv, usecols=["file name"], skipinitialspace=True)
+             df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True) # Changed "file name" to "file_name"
         except ValueError as ve:
-             logger.error(f"Column 'file name' not found in {filelist_csv}: {ve}")
-             raise FileNotFoundError(f"'file name' column missing in {filelist_csv}") from ve
+             logger.error(f"Column 'file_name' not found in {filelist_csv}: {ve}") # Changed "file name" to "file_name"
+             raise FileNotFoundError(f"'file_name' column missing in {filelist_csv}") from ve # Changed "file name" to "file_name"
         except pd.errors.EmptyDataError:
              logger.warning(f"{filelist_csv} is empty. No documents to load.")
              return data
@@ -308,11 +326,13 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
              raise
 
         parsed_docs = []
-        filenames_to_parse = df["file name"].dropna().unique().tolist()
+        filenames_to_parse = df["file_name"].dropna().unique().tolist() # Changed "file name" to "file_name"
         logger.info(f"Found {len(filenames_to_parse)} unique filenames to parse in {filelist_csv.name}.")
 
         for filename in filenames_to_parse:
+            logger.debug(f"Processing filename from CSV: '{filename}'") # Added log
             file_path = (project_path / filename).resolve()
+            logger.debug(f"Resolved path: {file_path}") # Added log
 
             if project_path not in file_path.parents:
                 logger.warning(f"Skipping file outside project directory: {filename}")
@@ -320,30 +340,39 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
                 continue
 
             if not file_path.is_file():
-                logger.warning(f"File listed in CSV not found: {filename} at {file_path}")
+                logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}") # Enhanced log
                 parsed_docs.append(DocumentContent(filename=filename, content="", error="File not found."))
                 continue
 
             suffix = file_path.suffix.lower()
+            logger.debug(f"File suffix: '{suffix}' for {filename}") # Added log
             doc_content = None
             if suffix == ".pdf":
+                logger.debug(f"Calling parse_pdf for {filename}") # Added log
                 doc_content = parse_pdf(file_path)
             elif suffix == ".docx":
+                logger.debug(f"Calling parse_docx for {filename}") # Added log
                 doc_content = parse_docx(file_path)
             elif suffix == ".md":
+                logger.debug(f"Calling parse_markdown for {filename}") # Added log
                 doc_content = parse_markdown(file_path)
             elif suffix == ".csv":
                  if file_path.name != filelist_csv.name:
+                     logger.debug(f"Calling parse_csv for {filename}") # Added log
                      doc_content = parse_csv(file_path)
                  else:
-                      logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
+                      logger.info(f"Skipping parsing of the filelist CSV itself: {filename}") # Kept info level
                       doc_content = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", error=None)
             else:
                 logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
                 doc_content = DocumentContent(filename=filename, content="", error=f"Unsupported file type: {suffix}")
 
             if doc_content:
+                logger.debug(f"Appending parsed content for {filename}. Error: {doc_content.error}") # Added log
                 parsed_docs.append(doc_content)
+            else:
+                # This case should ideally not happen if all branches create a DocumentContent object
+                logger.warning(f"No DocumentContent object created for {filename} after parsing attempt.") # Added log
 
         data["documents"] = parsed_docs
 
@@ -353,6 +382,35 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
         logger.error(f"Unexpected error loading project {project_name}: {e}\n{traceback.format_exc()}")
 
     return data
+
+# --- Token Counting Utility ---
+# Cache encodings to avoid re-fetching them repeatedly
+_encodings_cache = {}
+
+def count_tokens(text: str, model_name: str = "gpt-3.5-turbo") -> int:
+    """Estimates token count for text using tiktoken."""
+    if not text:
+        return 0
+    encoding_name = "cl100k_base" # Default encoding
+    try:
+        # Attempt to get model-specific encoding
+        if model_name not in _encodings_cache:
+            try:
+                _encodings_cache[model_name] = tiktoken.encoding_for_model(model_name)
+                logger.debug(f"Cached tiktoken encoding for model: {model_name}")
+            except KeyError:
+                # Fallback to default if model-specific encoding not found
+                logger.warning(f"Tiktoken encoding not found for model '{model_name}'. Falling back to '{encoding_name}'.")
+                if encoding_name not in _encodings_cache:
+                     _encodings_cache[encoding_name] = tiktoken.get_encoding(encoding_name)
+                _encodings_cache[model_name] = _encodings_cache[encoding_name] # Cache the fallback for this model
+
+        encoding = _encodings_cache[model_name]
+        return len(encoding.encode(text))
+    except Exception as e:
+        logger.error(f"Error counting tokens for model {model_name}: {e}. Text length: {len(text)}", exc_info=True)
+        # Fallback: rough estimate (e.g., chars / 4) if tiktoken fails unexpectedly
+        return len(text) // 4
 
 
 # --- FastAPI App Instance ---
@@ -422,12 +480,29 @@ async def list_projects():
 
                 if filelist_csv.is_file():
                     try:
-                        df = pd.read_csv(filelist_csv, usecols=["file name"], skipinitialspace=True)
-                        file_count = len(df["file name"].dropna())
-                    except Exception: pass
+                        # Ensure we use the correct column name 'file_name' as updated previously
+                        df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True)
+                        file_count = len(df["file_name"].dropna())
+                        logger.debug(f"Counted {file_count} files for project '{item.name}' from {filelist_csv.name}")
+                    except ValueError as ve:
+                        # Log specific error if 'file_name' column is missing
+                        logger.warning(f"Could not count files for project '{item.name}': Column 'file_name' not found in {filelist_csv.name}. Error: {ve}")
+                        file_count = 0 # Default to 0 on error
+                    except pd.errors.EmptyDataError:
+                        logger.warning(f"Could not count files for project '{item.name}': {filelist_csv.name} is empty.")
+                        file_count = 0 # Default to 0 if empty
+                    except Exception as e:
+                        # Log other potential errors during counting
+                        logger.error(f"Error counting files for project '{item.name}' from {filelist_csv.name}: {e}", exc_info=True)
+                        file_count = 0 # Default to 0 on error
+                else:
+                    logger.warning(f"filelist.csv not found for project '{item.name}', cannot count files.")
+                    file_count = 0
+
+                # Description logic remains unchanged (currently just default)
                 if prompt_file.is_file():
                      try: pass # Keep default desc
-                     except Exception: pass
+                     except Exception: pass # Keep this pass for description part
 
                 projects.append(ProjectInfo(name=item.name, description=desc, file_count=file_count))
         logger.info(f"Found {len(projects)} projects.")
@@ -511,10 +586,12 @@ async def chat_with_project(
     context_parts.append("\n</DOCUMENT_CONTEXT>\n")
     context_parts.append(f"\nUser Query: {request.query}")
     full_prompt = "".join(context_parts)
-    logger.info(f"Approximate prompt length: {len(full_prompt)} characters.")
+    input_token_count = count_tokens(full_prompt, request.model_name)
+    logger.info(f"Approximate prompt length: {len(full_prompt)} characters. Estimated input tokens: {input_token_count}")
 
     # 6. Send to the selected LLM Provider/Model
     llm_response_text = ""
+    output_token_count = 0
     try:
         if request.provider == "google":
             logger.info(f"Sending prompt to Google model: {request.model_name}...")
@@ -543,6 +620,8 @@ async def chat_with_project(
                      raise HTTPException(status_code=500, detail=f"Google LLM generation failed: {finish_reason}.{safety_msg}")
                 else:
                      raise HTTPException(status_code=500, detail="Failed to interpret Google LLM response.")
+            # Estimate output tokens after getting response
+            output_token_count = count_tokens(llm_response_text, request.model_name)
 
         elif request.provider == "openrouter":
             logger.info(f"Sending prompt to OpenRouter model: {request.model_name}...")
@@ -582,12 +661,17 @@ async def chat_with_project(
             if not llm_response_text:
                  logger.warning(f"OpenRouter response received but no text found. Response: {response_data}")
                  raise HTTPException(status_code=500, detail="Failed to interpret OpenRouter LLM response.")
+            # Estimate output tokens after getting response
+            output_token_count = count_tokens(llm_response_text, request.model_name)
 
         # If we got here, we should have llm_response_text
+        logger.info(f"Estimated output tokens: {output_token_count}")
         return ChatResponse(
             response=llm_response_text,
             sources_consulted=source_filenames,
-            model_used=f"{request.provider}/{request.model_name}" # Include provider in response
+            model_used=f"{request.provider}/{request.model_name}", # Include provider in response
+            input_tokens=input_token_count,
+            output_tokens=output_token_count
         )
 
     except httpx.HTTPStatusError as hse:
@@ -608,6 +692,105 @@ async def chat_with_project(
         # Add specific exception handling for genai if needed
         # e.g., except google.api_core.exceptions.PermissionDenied: ...
         raise HTTPException(status_code=500, detail=f"An error occurred during LLM interaction: {e}")
+
+
+# --- Model Details Endpoint ---
+
+# Cache OpenRouter model data for 1 hour
+openrouter_model_cache = TTLCache(maxsize=1, ttl=3600)
+
+@cached(openrouter_model_cache)
+async def get_openrouter_models_data() -> Optional[Dict]:
+    """Fetches and caches the full model list from OpenRouter."""
+    logger.info("Fetching full model list from OpenRouter API...")
+    openrouter_models_url = "https://openrouter.ai/api/v1/models"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(openrouter_models_url)
+            response.raise_for_status()
+            logger.info("Successfully fetched OpenRouter model list.")
+            return response.json()
+    except httpx.RequestError as e:
+        logger.error(f"HTTP error fetching OpenRouter models: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Error parsing OpenRouter models response: {e}", exc_info=True)
+        return None
+
+# Use :path converter for model_name to allow slashes (e.g., in OpenRouter model IDs like 'google/gemini...').
+# Without :path, FastAPI treats slashes in the variable part as path separators, leading to 404s.
+@app.get("/model-details/{provider}/{model_name:path}", response_model=ModelDetailsResponse)
+async def get_model_details(
+    provider: Literal["google", "openrouter"] = FastAPIPath(..., title="The LLM provider"),
+    model_name: str = FastAPIPath(..., title="The specific model name including any slashes")
+):
+    """Gets details like context window and pricing for a specific model."""
+    logger.info(f"'/model-details' endpoint accessed for {provider}/{model_name}")
+
+    # Validate provider and model against AVAILABLE_MODELS first
+    if provider not in AVAILABLE_MODELS or model_name not in AVAILABLE_MODELS[provider]:
+         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found or not configured for provider '{provider}'.")
+
+    details = ModelDetails() # Initialize empty details
+
+    try:
+        if provider == "google":
+            if not google_configured:
+                 raise HTTPException(status_code=400, detail="Google provider selected, but GOOGLE_API_KEY is not configured.")
+            try:
+                # Google model names might need 'models/' prefix for the API call
+                api_model_name = model_name if model_name.startswith("models/") else f"models/{model_name}"
+                logger.info(f"Querying Google API for model details: {api_model_name}")
+                model_info = genai.get_model(api_model_name)
+                details.input_token_limit = getattr(model_info, 'input_token_limit', None)
+                details.output_token_limit = getattr(model_info, 'output_token_limit', None)
+                # Pricing is generally not available via this API
+                details.notes = "Pricing information not available via Google API. Refer to Google Cloud/AI Studio documentation."
+                logger.info(f"Google model details retrieved: Input Limit={details.input_token_limit}, Output Limit={details.output_token_limit}")
+
+            except Exception as e:
+                logger.error(f"Error fetching Google model details for {model_name}: {e}", exc_info=True)
+                details.notes = f"Error fetching Google model details: {e}"
+
+
+        elif provider == "openrouter":
+            if not openrouter_configured:
+                 raise HTTPException(status_code=400, detail="OpenRouter provider selected, but OPENROUTER_API_KEY is not configured.")
+
+            all_models_data = await get_openrouter_models_data()
+            if not all_models_data or "data" not in all_models_data:
+                 raise HTTPException(status_code=503, detail="Could not retrieve model list from OpenRouter.")
+
+            found_model = None
+            for model_data in all_models_data["data"]:
+                if model_data.get("id") == model_name:
+                    found_model = model_data
+                    break
+
+            if found_model:
+                logger.info(f"Found OpenRouter model details for: {model_name}")
+                details.context_window = found_model.get("context_length")
+                pricing = found_model.get("pricing", {})
+                # Prices are per million tokens
+                details.input_cost_per_million_tokens = float(pricing.get("input", 0)) * 1_000_000 if pricing.get("input") is not None else None
+                details.output_cost_per_million_tokens = float(pricing.get("output", 0)) * 1_000_000 if pricing.get("output") is not None else None
+                details.notes = "Pricing shown is per 1 million tokens."
+            else:
+                logger.warning(f"Model '{model_name}' not found in OpenRouter's /models response.")
+                details.notes = "Model details not found in OpenRouter's current list."
+
+
+        return ModelDetailsResponse(
+            provider=provider,
+            model_name=model_name,
+            details=details
+        )
+
+    except HTTPException as he:
+        raise he # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Unexpected error fetching model details for {provider}/{model_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error fetching model details: {e}")
 
 
 # --- Uvicorn runner ---

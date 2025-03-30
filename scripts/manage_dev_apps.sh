@@ -112,19 +112,55 @@ stop_apps() {
     killed_count=0
 
     if [ -n "$backend_pid" ]; then
-        log "Attempting to stop backend (PID: $backend_pid)..."
-        # Use kill and check if process exists
+        log "Attempting to stop backend parent (PID: $backend_pid) and its children..."
+        # Check if parent process exists
         if ps -p "$backend_pid" > /dev/null; then
-            kill "$backend_pid"
-            sleep 1 # Give it a moment to terminate
-            if ps -p "$backend_pid" > /dev/null; then
-                 log_warn "Backend (PID: $backend_pid) did not stop gracefully, sending KILL signal..."
-                 kill -9 "$backend_pid"
+            # --- Robust Stop Logic for Uvicorn --reload ---
+            # Uvicorn --reload uses a supervisor process. Killing only the PID in the file
+            # might not stop the actual worker processes.
+            # Strategy:
+            # 1. Send SIGTERM to the parent PID (supervisor).
+            # 2. Wait briefly.
+            # 3. Check if parent or children (using pgrep -P) are still running.
+            # 4. If yes, send SIGTERM to children (using pkill -P).
+            # 5. Wait briefly.
+            # 6. If still running, send SIGKILL (-9) to children.
+            # 7. Wait briefly.
+            # 8. Final check: send SIGKILL to parent if it's still alive.
+            log "Sending TERM signal to parent PID $backend_pid..."
+            kill "$backend_pid" # Send SIGTERM to parent first
+            sleep 1 # Give parent time to shut down children gracefully
+
+            # Check if parent or children still exist (pgrep -P checks for children)
+            if ps -p "$backend_pid" > /dev/null || pgrep -P "$backend_pid" > /dev/null; then
+                log_warn "Parent or children still running. Sending TERM signal to children of PID $backend_pid..."
+                # pkill returns 0 if any process was matched, 1 otherwise. Ignore error if no children found.
+                pkill -P "$backend_pid" || true
+                sleep 1 # Give children time to terminate
+
+                if ps -p "$backend_pid" > /dev/null || pgrep -P "$backend_pid" > /dev/null; then
+                     log_warn "Parent or children still running after TERM signal. Sending KILL signal to children of PID $backend_pid..."
+                     pkill -9 -P "$backend_pid" || true
+                     sleep 1 # Give OS time
+
+                     # Final check and kill for the parent if it's somehow still alive
+                     if ps -p "$backend_pid" > /dev/null; then
+                        log_warn "Parent (PID: $backend_pid) still alive after child cleanup. Sending KILL signal to parent..."
+                        kill -9 "$backend_pid"
+                     fi
+                fi
             fi
-            log "Backend stopped."
-            killed_count=$((killed_count + 1))
+            log "Backend process group (Parent PID: $backend_pid) stopped."
+            killed_count=$((killed_count + 1)) # Count as one successful stop action
         else
-            log_warn "Backend process (PID: $backend_pid) not found."
+            log_warn "Backend parent process (PID: $backend_pid) not found. Checking for orphaned children..."
+            # Check if any children were left behind (unlikely if parent gone, but possible)
+            if pgrep -P "$backend_pid" > /dev/null; then
+                 log_warn "Orphaned backend children found (Parent PID: $backend_pid). Sending KILL signal..."
+                 pkill -9 -P "$backend_pid" || true
+            else
+                log "No running backend processes found for PID $backend_pid."
+            fi
         fi
     else
          log_warn "Backend PID not found in $PID_FILE."
