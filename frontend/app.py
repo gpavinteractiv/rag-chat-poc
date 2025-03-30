@@ -26,14 +26,14 @@ st.set_page_config(
 if "debug_logging_enabled" not in st.session_state:
     st.session_state.debug_logging_enabled = False # Default to OFF
 
-# Configure logging based on the session state
-log_level = logging.DEBUG if st.session_state.debug_logging_enabled else logging.INFO
+# Configure logging - Keep at INFO level to avoid file watcher loop with DEBUG
 # Remove existing handlers if any, to avoid duplicate logs on rerun
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
-logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
-logger.info(f"Frontend logging level set to: {logging.getLevelName(log_level)}")
+# logger.info(f"Frontend logging level set to: {logging.getLevelName(log_level)}") # No longer dynamic
+logger.info("Frontend logging level set to: INFO")
 
 
 # --- Type Definitions ---
@@ -164,17 +164,6 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
 
 # --- Sidebar Setup ---
 st.sidebar.header("Configuration")
-
-# --- Debug Logging Toggle ---
-# Place the toggle early in the sidebar
-st.sidebar.toggle(
-    "Enable Debug Logging",
-    key="debug_logging_enabled", # Use the same key as session state
-    help="Enable detailed DEBUG logs for the frontend application. Requires app rerun.",
-    # The on_change callback will trigger a rerun, and logging will be reconfigured above
-)
-
-st.sidebar.markdown("---") # Separator
 
 # --- Project Selection ---
 available_projects_info: List[ProjectInfo] = get_projects() # Now gets list of dicts
@@ -338,9 +327,19 @@ if "show_dev_bar" not in st.session_state:
 
 show_dev_bar = st.sidebar.toggle("Show Dev Bar", key="show_dev_bar")
 
+st.sidebar.markdown("---") # Separator
+
+# --- Debug Logging Toggle ---
+st.sidebar.toggle(
+    "Enable Debug Logging",
+    key="debug_logging_enabled", # Use the same key as session state
+    help="Enable detailed DEBUG logs for the frontend application. Requires app rerun.",
+    # The on_change callback will trigger a rerun, and logging will be reconfigured above
+)
+
 # --- Display Backend URL ---
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Backend API: {BACKEND_URL}")
+st.sidebar.caption(f"Backend API: {BACKEND_URL}/docs")
 
 
 # --- Main App Layout (with potential Dev Bar) ---
@@ -348,7 +347,7 @@ main_col, dev_bar_col = st.columns([0.7, 0.3]) # Adjust ratio as needed
 
 with main_col:
     st.title("📄🤖 RAG Chat PoC")
-    st.caption(f"A proof-of-concept chat agent using LLMs via a FastAPI backend ({BACKEND_URL}).")
+    st.caption(f"A proof-of-concept chat agent using LLMs via a FastAPI backend ({BACKEND_URL}/docs).")
 
     # --- Chat Interface Area ---
     st.header(f"Chat with Project: {selected_project if selected_project else 'N/A'}")
@@ -506,5 +505,10 @@ if st.session_state.show_dev_bar:
 
 
         st.divider()
-        st.subheader("Full Session State")
-        st.json(st.session_state) # Keep displaying full state for debugging
+        st.subheader("Debug Info")
+        # Conditionally display session state based on the toggle, instead of changing logger level
+        if st.session_state.debug_logging_enabled:
+            st.caption("Full Session State:")
+            st.json(st.session_state)
+        else:
+            st.caption("Enable Debug Logging in sidebar to view session state.")

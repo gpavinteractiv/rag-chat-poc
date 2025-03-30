@@ -86,6 +86,7 @@ start_apps() {
         source "$FRONTEND_VENV_DIR/bin/activate"
         set -u
         # Start streamlit, redirect stdout/stderr, run in background
+        # Streamlit should automatically detect .streamlit/config.toml
         nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 &> streamlit.log &
         frontend_pid=$!
         echo "frontend_pid=$frontend_pid" >> "$PID_FILE" # Append PID
@@ -101,87 +102,83 @@ start_apps() {
 # --- Stop Function ---
 stop_apps() {
     log "Stopping development servers..."
-    if [ ! -f "$PID_FILE" ]; then
-        log_warn "PID file ($PID_FILE) not found. Servers might not be running or were stopped manually."
-        return 0 # Not an error if already stopped
+    killed_count=0
+    backend_pid=""
+    frontend_pid=""
+
+    # Attempt to read PIDs from file if it exists (for logging context)
+    if [ -f "$PID_FILE" ]; then
+        log "PID file found ($PID_FILE). Reading PIDs..."
+        backend_pid=$(grep 'backend_pid=' "$PID_FILE" | cut -d'=' -f2 || true) # Use || true to avoid exit on grep fail
+        frontend_pid=$(grep 'frontend_pid=' "$PID_FILE" | cut -d'=' -f2 || true)
+        log "Read backend PID: ${backend_pid:-'Not Found'}, frontend PID: ${frontend_pid:-'Not Found'}"
+    else
+        log_warn "PID file ($PID_FILE) not found. Will attempt to stop based on process pattern."
     fi
 
-    backend_pid=$(grep 'backend_pid=' "$PID_FILE" | cut -d'=' -f2)
-    frontend_pid=$(grep 'frontend_pid=' "$PID_FILE" | cut -d'=' -f2)
+    # --- Backend Stop Logic ---
+    # Use pkill -f to find processes matching the uvicorn command for port 8000
+    # This is potentially more robust than relying on the PID file, especially for --reload
+    backend_pattern="uvicorn main:app.*--port 8000"
+    log "Attempting to stop backend processes matching pattern: '$backend_pattern'"
 
-    killed_count=0
+    # Check if any matching processes exist before trying to kill
+    if pgrep -f "$backend_pattern" > /dev/null; then
+        log "Found running backend processes. Sending TERM signal..."
+        # Send TERM signal first (graceful shutdown)
+        # Use || true to prevent script exit if no process is found (e.g., already stopped)
+        pkill -f "$backend_pattern" || true
+        sleep 2 # Allow time for graceful shutdown
 
-    if [ -n "$backend_pid" ]; then
-        log "Attempting to stop backend parent (PID: $backend_pid) and its children..."
-        # Check if parent process exists
-        if ps -p "$backend_pid" > /dev/null; then
-            # --- Robust Stop Logic for Uvicorn --reload ---
-            # Uvicorn --reload uses a supervisor process. Killing only the PID in the file
-            # might not stop the actual worker processes.
-            # Strategy:
-            # 1. Send SIGTERM to the parent PID (supervisor).
-            # 2. Wait briefly.
-            # 3. Check if parent or children (using pgrep -P) are still running.
-            # 4. If yes, send SIGTERM to children (using pkill -P).
-            # 5. Wait briefly.
-            # 6. If still running, send SIGKILL (-9) to children.
-            # 7. Wait briefly.
-            # 8. Final check: send SIGKILL to parent if it's still alive.
-            log "Sending TERM signal to parent PID $backend_pid..."
-            kill "$backend_pid" # Send SIGTERM to parent first
-            sleep 1 # Give parent time to shut down children gracefully
-
-            # Check if parent or children still exist (pgrep -P checks for children)
-            if ps -p "$backend_pid" > /dev/null || pgrep -P "$backend_pid" > /dev/null; then
-                log_warn "Parent or children still running. Sending TERM signal to children of PID $backend_pid..."
-                # pkill returns 0 if any process was matched, 1 otherwise. Ignore error if no children found.
-                pkill -P "$backend_pid" || true
-                sleep 1 # Give children time to terminate
-
-                if ps -p "$backend_pid" > /dev/null || pgrep -P "$backend_pid" > /dev/null; then
-                     log_warn "Parent or children still running after TERM signal. Sending KILL signal to children of PID $backend_pid..."
-                     pkill -9 -P "$backend_pid" || true
-                     sleep 1 # Give OS time
-
-                     # Final check and kill for the parent if it's somehow still alive
-                     if ps -p "$backend_pid" > /dev/null; then
-                        log_warn "Parent (PID: $backend_pid) still alive after child cleanup. Sending KILL signal to parent..."
-                        kill -9 "$backend_pid"
-                     fi
-                fi
-            fi
-            log "Backend process group (Parent PID: $backend_pid) stopped."
-            killed_count=$((killed_count + 1)) # Count as one successful stop action
-        else
-            log_warn "Backend parent process (PID: $backend_pid) not found. Checking for orphaned children..."
-            # Check if any children were left behind (unlikely if parent gone, but possible)
-            if pgrep -P "$backend_pid" > /dev/null; then
-                 log_warn "Orphaned backend children found (Parent PID: $backend_pid). Sending KILL signal..."
-                 pkill -9 -P "$backend_pid" || true
+        # Check again if processes still exist
+        if pgrep -f "$backend_pattern" > /dev/null; then
+            log_warn "Backend processes still running after TERM signal. Sending KILL signal..."
+            # Send KILL signal (forceful shutdown)
+            pkill -9 -f "$backend_pattern" || true
+            sleep 1 # Give OS time
+            if pgrep -f "$backend_pattern" > /dev/null; then
+                 log_error "Backend processes failed to stop even after KILL signal."
+                 # Optionally, add more drastic measures or just report the error
             else
-                log "No running backend processes found for PID $backend_pid."
+                 log "Backend processes stopped via KILL signal."
+                 killed_count=$((killed_count + 1))
             fi
+        else
+            log "Backend processes stopped gracefully via TERM signal."
+            killed_count=$((killed_count + 1))
         fi
     else
-         log_warn "Backend PID not found in $PID_FILE."
+        log_warn "No running backend processes found matching pattern '$backend_pattern'."
+        # If PID file exists but process doesn't, log the PID from file for info
+        if [ -n "$backend_pid" ]; then
+             log_warn "(PID $backend_pid was listed in $PID_FILE but process not found matching pattern)."
+        fi
     fi
 
-     if [ -n "$frontend_pid" ]; then
+    # --- Frontend Stop Logic ---
+    # Still use PID for frontend as it's less likely to have complex process trees
+    if [ -n "$frontend_pid" ]; then
         log "Attempting to stop frontend (PID: $frontend_pid)..."
         if ps -p "$frontend_pid" > /dev/null; then
-            kill "$frontend_pid"
+            kill "$frontend_pid" || true # Send TERM, ignore error if already gone
             sleep 1
             if ps -p "$frontend_pid" > /dev/null; then
                  log_warn "Frontend (PID: $frontend_pid) did not stop gracefully, sending KILL signal..."
-                 kill -9 "$frontend_pid"
+                 kill -9 "$frontend_pid" || true # Send KILL, ignore error
             fi
-            log "Frontend stopped."
-            killed_count=$((killed_count + 1))
+            # Check one last time
+            if ! ps -p "$frontend_pid" > /dev/null; then
+                 log "Frontend stopped."
+                 killed_count=$((killed_count + 1))
+            else
+                 log_error "Frontend (PID: $frontend_pid) failed to stop."
+            fi
         else
-            log_warn "Frontend process (PID: $frontend_pid) not found."
+            log_warn "Frontend process (PID: $frontend_pid from $PID_FILE) not found."
         fi
     else
-         log_warn "Frontend PID not found in $PID_FILE."
+         log_warn "Frontend PID not found in $PID_FILE (or file missing)."
+         # Optionally, could add pkill -f for streamlit pattern here too if needed
     fi
 
     # Clean up PID file
