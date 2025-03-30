@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+source backend/venv/bin/activate
 
 import argparse
 import logging
