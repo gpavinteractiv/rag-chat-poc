@@ -215,6 +215,7 @@ def get_project_path(project_name: str) -> Optional[Path]:
     project_path = (PROJECTS_DIR / project_name).resolve()
     if PROJECTS_DIR in project_path.parents and project_path.is_dir():
         return project_path
+    logger.warning(f"Project path is outside the allowed directory or is not a directory: {project_name}")
     logger.warning(f"Invalid or non-existent project requested: {project_name}")
     return None
 
