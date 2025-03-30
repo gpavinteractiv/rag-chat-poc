@@ -20,7 +20,8 @@ import tiktoken # Added for token counting
 from cachetools import cached, TTLCache # For caching OpenRouter model data
 
 # --- Configuration & Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s') # Default level set to INFO
+# Set logging level to DEBUG to capture detailed info for pricing issue
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
 load_dotenv()
 logger.info(".env file loaded.")
@@ -771,10 +772,26 @@ async def get_model_details(
                 logger.info(f"Found OpenRouter model details for: {model_name}")
                 details.context_window = found_model.get("context_length")
                 pricing = found_model.get("pricing", {})
-                # Prices are per million tokens
-                details.input_cost_per_million_tokens = float(pricing.get("input", 0)) * 1_000_000 if pricing.get("input") is not None else None
-                details.output_cost_per_million_tokens = float(pricing.get("output", 0)) * 1_000_000 if pricing.get("output") is not None else None
-                details.notes = "Pricing shown is per 1 million tokens."
+                # OpenRouter provides cost per single token under 'prompt' and 'completion' keys
+                prompt_cost_str = pricing.get("prompt") # Use 'prompt' key for input cost
+                completion_cost_str = pricing.get("completion") # Use 'completion' key for output cost
+
+                # Convert per-token cost to per-million-token cost
+                try:
+                    prompt_cost_float = float(prompt_cost_str) if prompt_cost_str is not None else None
+                    details.input_cost_per_million_tokens = prompt_cost_float * 1_000_000 if prompt_cost_float is not None else None
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert OpenRouter prompt cost '{prompt_cost_str}' to float for model {model_name}.")
+                    details.input_cost_per_million_tokens = None
+
+                try:
+                    completion_cost_float = float(completion_cost_str) if completion_cost_str is not None else None
+                    details.output_cost_per_million_tokens = completion_cost_float * 1_000_000 if completion_cost_float is not None else None
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert OpenRouter completion cost '{completion_cost_str}' to float for model {model_name}.")
+                    details.output_cost_per_million_tokens = None
+
+                details.notes = "Pricing shown is per 1 million tokens (calculated from API data)." # Updated note
             else:
                 logger.warning(f"Model '{model_name}' not found in OpenRouter's /models response.")
                 details.notes = "Model details not found in OpenRouter's current list."
