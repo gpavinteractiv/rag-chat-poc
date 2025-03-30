@@ -21,13 +21,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Logging Setup (Conditional based on Toggle) ---
-# Initialize session state for the toggle *before* configuring logging
-if "debug_logging_enabled" not in st.session_state:
-    st.session_state.debug_logging_enabled = False # Default to OFF
-
 # Configure logging - Keep at INFO level to avoid file watcher loop with DEBUG
 # Remove existing handlers if any, to avoid duplicate logs on rerun
+# Removed debug_logging_enabled session state initialization
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
@@ -327,15 +323,7 @@ if "show_dev_bar" not in st.session_state:
 
 show_dev_bar = st.sidebar.toggle("Show Dev Bar", key="show_dev_bar")
 
-st.sidebar.markdown("---") # Separator
-
-# --- Debug Logging Toggle ---
-st.sidebar.toggle(
-    "Enable Debug Logging",
-    key="debug_logging_enabled", # Use the same key as session state
-    help="Enable detailed DEBUG logs for the frontend application. Requires app rerun.",
-    # The on_change callback will trigger a rerun, and logging will be reconfigured above
-)
+# Removed Debug Logging Toggle section
 
 # --- Display Backend URL ---
 st.sidebar.markdown("---")
@@ -506,9 +494,6 @@ if st.session_state.show_dev_bar:
 
         st.divider()
         st.subheader("Debug Info")
-        # Conditionally display session state based on the toggle, instead of changing logger level
-        if st.session_state.debug_logging_enabled:
-            st.caption("Full Session State:")
-            st.json(st.session_state)
-        else:
-            st.caption("Enable Debug Logging in sidebar to view session state.")
+        # Always display session state when Dev Bar is shown
+        st.caption("Full Session State:")
+        st.json(st.session_state)
