@@ -109,13 +109,13 @@ projects/**/*.txt
 # --- Project Specific Metadata (Keep Tracked) ---
 # Ensure essential project configuration files ARE tracked
 # Example: !projects/**/metadata.json
-!projects/**/system_prompt.txt
-!projects/**/filelist.csv
+#!projects/**/system_prompt.txt
+#!projects/**/filelist.csv
 
 # --- Template Directory Specific Rules ---
 # Ensure the template directory itself and its essential files are tracked
 !projects/_template/             # Un-ignore the directory itself
-projects/_template/*             # Ignore everything inside by default
+#projects/_template/*             # Ignore everything inside by default
 !projects/_template/system_prompt.txt # Re-include this file
 !projects/_template/filelist.csv    # Re-include this file
 
@@ -156,4 +156,3 @@ logs/
 # --- Instance Folders (e.g., Flask) ---
 instance/
 *.sqlite3
-*.db
