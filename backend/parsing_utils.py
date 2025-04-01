@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 # Re-define DocumentContent here or import from main if preferred (requires careful import handling)
 class DocumentContent(BaseModel):
     filename: str
-    content: str
+    content: Optional[str] # Content can be None if parsing fails
+    token_count: Optional[int] = None # Add field for pre-calculated token count
     error: Optional[str] = None
 
 def parse_pdf(file_path: Path) -> DocumentContent:

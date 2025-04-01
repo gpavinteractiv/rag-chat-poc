@@ -27,6 +27,10 @@ from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, Docu
 # Set logging level to DEBUG to capture detailed info for pricing issue
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
+# Set pdfplumber logger to INFO to reduce verbosity
+logging.getLogger("pdfplumber").setLevel(logging.INFO)
+# Set pdfminer logger to INFO as well
+logging.getLogger("pdfminer").setLevel(logging.INFO)
 load_dotenv()
 logger.info(".env file loaded.")
 
@@ -181,18 +185,22 @@ class ChatRequest(BaseModel):
     query: str = Field(..., example="Summarize the key points of the provided documents.")
     provider: Literal["google", "openrouter"] = Field(..., example="openrouter") # Added provider selection
     model_name: str = Field(..., example="mistralai/mistral-7b-instruct") # Added model name selection
+    max_context_tokens: Optional[int] = Field(None, example=900000, description="Maximum tokens allowed for the context (documents + prompt). If None, uses a default.") # Added max tokens
     # history: Optional[List[ChatMessage]] = None # Keep commented for now
 
 class ChatResponse(BaseModel):
     response: str
     sources_consulted: List[str] # List of filenames used in context
+    skipped_sources: List[str] = Field([], description="List of document filenames skipped because adding them would exceed the token limit.") # Added skipped sources
     model_used: str # Added to confirm which model responded
     input_tokens: Optional[int] = None # Added token counts
     output_tokens: Optional[int] = None # Added token counts
+    runtime_parsing_occurred: bool = Field(False, description="Flag indicating whether documents were parsed at runtime rather than loaded from cache.")
 
 class DocumentContent(BaseModel):
     filename: str
-    content: str
+    content: Optional[str] # Content can be None if parsing fails or file is skipped
+    token_count: Optional[int] = None # Added pre-calculated token count
     error: Optional[str] = None # To report if parsing failed
 
 class ModelInfo(BaseModel):
@@ -282,10 +290,11 @@ def load_from_disk_cache(project_path: Path, cache_file_path: Path) -> Optional[
                 is_cache_valid = False
                 break
 
-            # If valid so far, reconstruct DocumentContent
+            # If valid so far, reconstruct DocumentContent, including token count if available
             validated_docs.append(DocumentContent(
                 filename=filename,
                 content=doc_cache_info.get("parsed_content"),
+                token_count=doc_cache_info.get("token_count"), # Load token count from cache
                 error=doc_cache_info.get("parsing_error")
             ))
 
@@ -304,7 +313,7 @@ def load_from_disk_cache(project_path: Path, cache_file_path: Path) -> Optional[
         return None
 
 def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
-    """Saves parsed document data (including mod times) to the disk cache."""
+    """Saves parsed document data (including mod times and token counts) to the disk cache."""
     cache_file_path = get_cache_file_path(project_name)
     logger.info(f"Saving freshly parsed data to disk cache: {cache_file_path}")
     try:
@@ -312,7 +321,7 @@ def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
             "cache_version": CACHE_VERSION,
             "project_name": project_name,
             "generation_timestamp": time.time(),
-            "documents": documents_data # Expects dict {filename: {"parsed_content":..., "source_mod_time":..., "parsing_error":...}}
+            "documents": documents_data # Expects dict {filename: {"parsed_content":..., "source_mod_time":..., "token_count":..., "parsing_error":...}}
         }
         cache_file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_file_path, 'w', encoding='utf-8') as f:
@@ -386,12 +395,18 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
 
     try:
         try:
-             # Ensure pandas is imported if needed
-             import pandas as pd
-             df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True)
-        except ValueError as ve:
-             logger.error(f"Column 'file_name' not found in {filelist_csv}: {ve}")
-             raise FileNotFoundError(f"'file_name' column missing in {filelist_csv}") from ve
+            # Ensure pandas is imported if needed
+            import pandas as pd
+            # Read both filename and token count columns
+            required_cols = ["file_name", "token_count"]
+            df = pd.read_csv(filelist_csv, usecols=lambda c: c in required_cols, skipinitialspace=True)
+            if not all(col in df.columns for col in required_cols):
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                logger.error(f"Required column(s) {missing_cols} not found in {filelist_csv}. Cannot load documents with token counts.")
+                raise FileNotFoundError(f"Required column(s) missing in {filelist_csv}: {missing_cols}")
+        except ValueError as ve: # Should be caught by the column check above now
+            logger.error(f"Error reading required columns from {filelist_csv}: {ve}")
+            raise FileNotFoundError(f"Required column(s) missing or error reading {filelist_csv}") from ve
         except pd.errors.EmptyDataError:
              logger.warning(f"{filelist_csv} is empty. No documents to load.")
              # Cache empty result
@@ -404,77 +419,118 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
              raise HTTPException(status_code=500, detail="Pandas library not installed in backend environment.")
         except Exception as e:
              logger.error(f"Error reading {filelist_csv}: {e}")
-             raise # Re-raise to be caught by the outer try-except
+        except Exception as e:
+            logger.error(f"Error reading {filelist_csv}: {e}")
+            raise # Re-raise to be caught by the outer try-except
 
-        filenames_to_parse = df["file_name"].dropna().unique().tolist()
-        logger.info(f"Found {len(filenames_to_parse)} unique filenames to parse in {filelist_csv.name}.")
+        # Use dropna on filename subset to avoid dropping rows with valid filename but NA token_count
+        df_valid_filenames = df.dropna(subset=['file_name'])
+        logger.info(f"Found {len(df_valid_filenames)} rows with valid filenames to parse in {filelist_csv.name}.")
 
-        for filename in filenames_to_parse:
-            logger.debug(f"Processing filename from CSV: '{filename}'")
+        # Iterate through DataFrame rows to access both filename and token count
+        for index, row in df_valid_filenames.iterrows():
+            filename = row["file_name"]
+            # Get precalculated token count, handle NA/errors from CSV read
+            precalculated_token_count = pd.to_numeric(row.get("token_count"), errors='coerce')
+            if pd.isna(precalculated_token_count):
+                precalculated_token_count = None # Store as None if invalid
+                logger.warning(f"Invalid or missing precalculated token count for {filename} in CSV. Will be ignored.")
+            else:
+                precalculated_token_count = int(precalculated_token_count) # Convert to int if valid
+
+            logger.debug(f"Processing file: '{filename}' (Precalculated Tokens: {precalculated_token_count})")
             file_path = (project_path / filename).resolve()
             logger.debug(f"Resolved path: {file_path}")
 
-            doc_content: Optional[DocumentContent] = None
+            doc_content_obj: Optional[DocumentContent] = None # Renamed to avoid confusion
             parsing_error_msg: Optional[str] = None
             parsed_text: Optional[str] = None
             mod_time: Optional[float] = None
 
             if project_path.resolve() not in file_path.resolve().parents:
-                logger.warning(f"Skipping file outside project directory: {filename}")
-                parsing_error_msg = "Access Denied: File is outside project scope."
-                mod_time = None # Cannot get mod time if outside scope
+                 logger.warning(f"Skipping file outside project directory: {filename}")
+                 parsing_error_msg = "Access Denied: File is outside project scope."
+                 mod_time = None # Cannot get mod time if outside scope
+                 # Create error object directly
+                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
             elif not file_path.is_file():
-                logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}")
-                parsing_error_msg = "File not found."
-                mod_time = None # File doesn't exist
+                 logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}")
+                 parsing_error_msg = "File not found."
+                 mod_time = None # File doesn't exist
+                 # Create error object directly
+                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
             else:
-                mod_time = get_modification_time(file_path)
-                if mod_time is None:
-                     parsing_error_msg = "File inaccessible or error getting modification time."
-                else:
-                    # --- Actual Parsing ---
-                    suffix = file_path.suffix.lower()
-                    logger.debug(f"File suffix: '{suffix}' for {filename}")
-                    try:
-                        if suffix == ".pdf": doc_content = parse_pdf(file_path)
-                        elif suffix == ".docx": doc_content = parse_docx(file_path)
-                        elif suffix == ".md": doc_content = parse_markdown(file_path)
-                        elif suffix == ".csv" and file_path.name != filelist_csv.name:
-                             doc_content = parse_csv(file_path)
-                        elif file_path.name == filelist_csv.name:
-                             logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
-                             doc_content = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", error=None)
-                        else:
-                            logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
-                            doc_content = DocumentContent(filename=filename, content=None, error=f"Unsupported file type: {suffix}")
+                 mod_time = get_modification_time(file_path)
+                 if mod_time is None:
+                      parsing_error_msg = "File inaccessible or error getting modification time."
+                      # Create error object directly
+                      doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
+                 else:
+                     # --- Actual Parsing ---
+                     suffix = file_path.suffix.lower()
+                     logger.debug(f"File suffix: '{suffix}' for {filename}")
+                     try:
+                         if suffix == ".pdf": doc_content_obj = parse_pdf(file_path)
+                         elif suffix == ".docx": doc_content_obj = parse_docx(file_path)
+                         elif suffix == ".md": doc_content_obj = parse_markdown(file_path)
+                         elif suffix == ".csv" and file_path.name != filelist_csv.name:
+                              doc_content_obj = parse_csv(file_path)
+                         elif file_path.name == filelist_csv.name:
+                               logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
+                               # Create DocumentContent directly, token count is irrelevant here
+                               doc_content_obj = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", token_count=0, error=None)
+                         else:
+                              logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
+                              doc_content_obj = DocumentContent(filename=filename, content=None, token_count=0, error=f"Unsupported file type: {suffix}")
 
-                        if doc_content:
-                             parsed_text = doc_content.content
-                             parsing_error_msg = doc_content.error
-                             if parsing_error_msg:
-                                  logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
-                             else:
-                                  logger.info(f" -> Successfully parsed {filename}.")
-                        else:
-                             # Should not happen
-                             logger.error(f" -> Failed to get DocumentContent object for {filename}. Storing error.")
-                             parsing_error_msg = "Unknown parsing failure."
+                         if doc_content_obj:
+                               parsed_text = doc_content_obj.content # Keep track of parsed text
+                               parsing_error_msg = doc_content_obj.error # Keep track of parsing error
+                               # Use the precalculated token count, don't overwrite from parsing result
+                               # (parsing_utils functions don't return token counts anyway)
+                               if parsing_error_msg:
+                                    logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
+                               # Always assign the precalculated token count if it's valid,
+                               # regardless of parsing errors (which are stored separately).
+                               if precalculated_token_count is not None:
+                                   doc_content_obj.token_count = precalculated_token_count
+                                   logger.debug(f" -> Assigned precalculated token count: {precalculated_token_count}")
+                               else:
+                                   # If precalculated count was invalid/missing from CSV, ensure it's None here too.
+                                   doc_content_obj.token_count = None
+                                   logger.warning(f" -> Precalculated token count was invalid/missing for {filename}, setting to None.")
 
-                    except Exception as e:
-                         logger.error(f" -> Unexpected error parsing file {filename}: {e}", exc_info=True)
-                         parsing_error_msg = f"Unexpected error: {e}"
-                         parsed_text = None # Ensure content is None on error
+                               # Log parsing success/failure separately
+                               if parsing_error_msg:
+                                    logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
+                               else:
+                                    logger.info(f" -> Successfully parsed {filename}.")
+                         else:
+                               # This case handles if the parsing function itself returned None
+                               logger.error(f" -> Parsing function failed to return a DocumentContent object for {filename}. Storing error.")
+                               parsing_error_msg = "Unknown parsing function failure."
+                               doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg) # Create error object
+
+                     except Exception as e:
+                          logger.error(f" -> Unexpected error parsing file {filename}: {e}", exc_info=True)
+                          parsing_error_msg = f"Unexpected error: {e}"
+                          # Create error object directly
+                          doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
 
             # --- Store results for both return value and disk cache payload ---
-            parsed_docs_list.append(DocumentContent(
-                filename=filename,
-                content=parsed_text,
-                error=parsing_error_msg
-            ))
+            # Ensure doc_content_obj exists before appending/using
+            if doc_content_obj is None:
+                 # This should ideally not happen if all paths create an object, but as a safeguard:
+                 logger.error(f"doc_content_obj is None for {filename} after processing. Creating error object.")
+                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error="Internal processing error")
+
+            parsed_docs_list.append(doc_content_obj)
+
             disk_cache_payload[filename] = {
-                "parsed_content": parsed_text,
-                "source_mod_time": mod_time,
-                "parsing_error": parsing_error_msg
+                 "parsed_content": doc_content_obj.content,
+                 "source_mod_time": mod_time,
+                 "token_count": doc_content_obj.token_count, # Save token count to cache
+                 "parsing_error": doc_content_obj.error
             }
 
         # --- Save to Disk Cache and In-Memory Cache ---
@@ -484,7 +540,7 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
         return project_data
 
     except FileNotFoundError as fnf:
-         # This might happen if filelist.csv is missing 'file_name' column
+         # This might happen if filelist.csv is missing required columns
          logger.error(f"Project loading failed for {project_name}: {fnf}")
          # Return empty data but don't cache this failure state? Or cache it?
          # Let's return empty but not cache, forcing re-parse next time.
@@ -683,6 +739,16 @@ async def chat_with_project(
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
 
     # 4. Load project data (system prompt + parsed documents)
+    runtime_parsing_occurred = False
+    # First check if the cache file exists - if it doesn't, we'll be parsing at runtime
+    cache_file_path = get_cache_file_path(project_name)
+    if not cache_file_path.is_file():
+        logger.info(f"No cache file found for project '{project_name}'. Documents will be parsed at runtime.")
+        runtime_parsing_occurred = True
+    elif project_name not in IN_MEMORY_DOC_CACHE:
+        logger.info(f"Project '{project_name}' not in memory cache. Will attempt to load from disk cache or parse fresh.")
+        runtime_parsing_occurred = True
+
     try:
         project_data = load_project_data(project_path)
     except Exception as e:
@@ -691,45 +757,75 @@ async def chat_with_project(
 
     system_prompt = project_data.get("system_prompt", "Error: System prompt missing.")
     documents: List[DocumentContent] = project_data.get("documents", [])
-    source_filenames = [doc.filename for doc in documents]
+    # source_filenames = [doc.filename for doc in documents] # We'll build this list based on included docs
 
-    # 5. Construct the full context (same logic as before)
-    context_parts = [system_prompt]
-    context_parts.append("\n<DOCUMENT_CONTEXT>")
+    # 5. Construct Context based on Token Limit
+    DEFAULT_MAX_CONTEXT_TOKENS = 900_000 # Default limit if not provided
+    effective_max_tokens = request.max_context_tokens if request.max_context_tokens and request.max_context_tokens > 0 else DEFAULT_MAX_CONTEXT_TOKENS
+    logger.info(f"Using effective max context tokens: {effective_max_tokens}")
+
+    # Calculate base prompt tokens (system prompt + query + separators/structure)
+    # Estimate tokens for separators and structure conservatively
+    base_prompt_structure = f"{system_prompt}\n<DOCUMENT_CONTEXT>\n</DOCUMENT_CONTEXT>\n\nUser Query: {request.query}"
+    base_prompt_tokens = count_tokens(base_prompt_structure, request.model_name)
+    # Add estimated tokens per document for separators like "--- START DOC ---", etc.
+    tokens_per_doc_overhead = count_tokens("\n\n--- START DOCUMENT X: filename.ext ---\n\n--- END DOCUMENT X: filename.ext ---", request.model_name)
+
+    context_parts = [system_prompt, "\n<DOCUMENT_CONTEXT>"]
+    included_sources: List[str] = []
+    skipped_sources: List[str] = []
+    current_token_usage = base_prompt_tokens
+    remaining_docs = list(documents) # Create a mutable list to track remaining docs
+
     if not documents:
-         context_parts.append("\n[No documents loaded for this project.]")
+        context_parts.append("\n[No documents loaded for this project.]")
     else:
-        logger.info(f"Constructing context with {len(documents)} documents for project {project_name}.")
-        # Simple length check - NEEDS PROPER TOKENIZATION AND STRATEGY
-        # Calculate rough character limit per doc based on a total context goal (e.g., 1M chars)
-        total_char_limit = 1_000_000 # Target total characters for context (adjust as needed)
-        base_prompt_len = len(system_prompt) + len(request.query) + 500 # Estimate overhead
-        remaining_chars = total_char_limit - base_prompt_len
-        chars_per_doc = remaining_chars // len(documents) if len(documents) > 0 else remaining_chars
-        if chars_per_doc < 100: # Ensure a minimum reasonable limit
-             chars_per_doc = 100
-             logger.warning(f"Calculated low character limit per doc ({chars_per_doc}), potentially too many docs or too long base prompt.")
-
+        logger.info(f"Attempting to construct context with {len(documents)} documents for project {project_name} within {effective_max_tokens} token limit.")
         for i, doc in enumerate(documents):
-            context_parts.append(f"\n\n--- START DOCUMENT {i+1}: {doc.filename} ---")
-            if doc.error:
-                context_parts.append(f"\n[Parsing Error: {doc.error}]")
-            elif doc.content:
-                if len(doc.content) > chars_per_doc:
-                     truncated_content = doc.content[:chars_per_doc]
-                     context_parts.append(f"\n{truncated_content}")
-                     context_parts.append(f"\n[... Content truncated due to length ...]")
-                     logger.warning(f"Truncated content for {doc.filename} to {chars_per_doc} chars.")
-                else:
-                     context_parts.append(f"\n{doc.content}")
+            # Check if document has valid precalculated token count and *some* content (even if error is flagged)
+            if doc.token_count is None or doc.token_count <= 0:
+                logger.warning(f"Skipping document {doc.filename} due to missing or invalid precalculated token count ({doc.token_count}).")
+                skipped_sources.append(f"{doc.filename} (invalid token count)")
+                remaining_docs.pop(0) # Remove from remaining list
+                continue
+            # Also skip if content is truly None (e.g., file not found during parse)
+            if doc.content is None:
+                logger.warning(f"Skipping document {doc.filename} because content is None (likely file not found or inaccessible during parse).")
+                skipped_sources.append(f"{doc.filename} (no content)")
+                remaining_docs.pop(0) # Remove from remaining list
+                continue
+
+            # Calculate potential usage if this doc is added
+            potential_usage = current_token_usage + doc.token_count + tokens_per_doc_overhead
+
+            # --- DEBUG LOGGING REMOVED ---
+
+            if potential_usage <= effective_max_tokens:
+                # Add the document
+                context_parts.append(f"\n\n--- START DOCUMENT {i+1}: {doc.filename} ---")
+                context_parts.append(f"\n{doc.content}")
+                context_parts.append(f"\n--- END DOCUMENT {i+1}: {doc.filename} ---")
+                current_token_usage = potential_usage
+                included_sources.append(doc.filename)
+                remaining_docs.pop(0) # Remove from remaining list
+                logger.debug(f"Included document: {doc.filename} (Tokens: {doc.token_count}). Current total tokens: {current_token_usage}")
             else:
-                context_parts.append("\n[Document loaded but contains no text content]")
-            context_parts.append(f"\n--- END DOCUMENT {i+1}: {doc.filename} ---")
+                # Document exceeds limit, stop adding documents
+                logger.warning(f"Skipping document {doc.filename} (Tokens: {doc.token_count}) as adding it would exceed the limit ({potential_usage} > {effective_max_tokens}).")
+                # Add this and all subsequent documents to skipped_sources
+                skipped_sources.append(f"{doc.filename} (limit reached)")
+                skipped_sources.extend([f"{rem_doc.filename} (limit reached)" for rem_doc in remaining_docs[1:]]) # Add remaining filenames
+                break # Stop iterating
+
     context_parts.append("\n</DOCUMENT_CONTEXT>\n")
     context_parts.append(f"\nUser Query: {request.query}")
     full_prompt = "".join(context_parts)
-    input_token_count = count_tokens(full_prompt, request.model_name)
-    logger.info(f"Approximate prompt length: {len(full_prompt)} characters. Estimated input tokens: {input_token_count}")
+
+    # Calculate final input token count based on the actual assembled prompt
+    final_input_token_count = count_tokens(full_prompt, request.model_name)
+    logger.info(f"Final prompt length: {len(full_prompt)} characters. Final input tokens: {final_input_token_count}")
+    if skipped_sources:
+         logger.warning(f"Skipped {len(skipped_sources)} sources due to token limit: {skipped_sources}")
 
     # 6. Send to the selected LLM Provider/Model
     llm_response_text = ""
@@ -810,10 +906,12 @@ async def chat_with_project(
         logger.info(f"Estimated output tokens: {output_token_count}")
         return ChatResponse(
             response=llm_response_text,
-            sources_consulted=source_filenames,
+            sources_consulted=included_sources, # Return list of included sources
+            skipped_sources=skipped_sources, # Return list of skipped sources
             model_used=f"{request.provider}/{request.model_name}", # Include provider in response
-            input_tokens=input_token_count,
-            output_tokens=output_token_count
+            input_tokens=final_input_token_count, # Use final calculated input tokens
+            output_tokens=output_token_count,
+            runtime_parsing_occurred=runtime_parsing_occurred # Add flag indicating if parsing happened at runtime
         )
 
     except httpx.HTTPStatusError as hse:

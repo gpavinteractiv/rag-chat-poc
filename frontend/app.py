@@ -163,9 +163,10 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
     payload = {
         "query": query,
         "provider": provider,
-        "model_name": model_name
+        "model_name": model_name,
+        "max_context_tokens": st.session_state.max_context_tokens # Pass the limit from session state
     }
-    logger.info(f"Sending query to {api_url} using {provider}/{model_name}")
+    logger.info(f"Sending query to {api_url} using {provider}/{model_name} with max_tokens={st.session_state.max_context_tokens}")
 
     try:
         with httpx.Client(timeout=120.0) as client:
@@ -329,6 +330,21 @@ if st.sidebar.button("Clear Chat History", key="clear_chat"):
     clear_chat_and_tokens()
     st.rerun()
 
+# --- Max Context Tokens Input ---
+if "max_context_tokens" not in st.session_state:
+    st.session_state.max_context_tokens = 900000 # Default value
+
+st.sidebar.number_input(
+    "Max Context Tokens:",
+    min_value=10000,
+    max_value=2000000, # Allow up to 2M
+    value=st.session_state.max_context_tokens,
+    step=50000,
+    key="max_context_tokens",
+    help="Maximum number of tokens allowed for the combined context (documents + prompt). Documents exceeding this limit will be skipped."
+)
+
+
 # --- Dev Bar Toggle ---
 if "show_dev_bar" not in st.session_state:
     st.session_state.show_dev_bar = False
@@ -398,6 +414,29 @@ with main_col:
                 )
 
             if api_response and "response" in api_response:
+                # Display warning if sources were skipped
+                skipped_sources = api_response.get("skipped_sources", [])
+                if skipped_sources:
+                    skipped_files_str = ", ".join([s.split(" (")[0] for s in skipped_sources]) # Extract just filenames
+                    st.warning(f"⚠️ Context limit reached. The following sources were skipped: {skipped_files_str}. Consider increasing 'Max Context Tokens' in the sidebar.", icon="⚠️")
+                
+                # Display warning if documents were parsed at runtime
+                runtime_parsing_occurred = api_response.get("runtime_parsing_occurred", False)
+                if runtime_parsing_occurred:
+                    # Add debug output
+                    st.write(f"Debug - runtime_parsing_occurred: {runtime_parsing_occurred}")
+                    print(f"Debug - runtime_parsing_occurred flag is set to: {runtime_parsing_occurred}")
+                    logger.info(f"Runtime parsing occurred: {runtime_parsing_occurred}")
+                    
+                    # Show the warning with more prominent styling
+                    st.warning(
+                        "⏳ Documents were parsed at runtime, which may cause slower response times. " +
+                        "For better performance, run the pre-processing scripts: \n" +
+                        "1. `./scripts/update_all_token_counts.sh` to calculate token counts\n" +
+                        "2. `./scripts/run_pregenerate_cache.sh` to pre-parse documents",
+                        icon="⏳"
+                    )
+
                 assistant_response_content = api_response["response"]
                 sources = api_response.get("sources_consulted", [])
                 model_used = api_response.get("model_used", f"{selected_provider}/{selected_model}")
