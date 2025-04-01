@@ -153,6 +153,27 @@ def get_model_details(provider: str, model_name: str) -> Optional[Dict]:
 
 # Removed get_project_base_tokens function
 
+def check_if_parsing_needed(project_name: str) -> bool:
+    """Checks if the specified project will need runtime parsing."""
+    if not project_name:
+        return False
+    
+    check_url = f"{BACKEND_URL}/check-parsing/{project_name}"
+    logger.info(f"Checking if runtime parsing is needed for project '{project_name}' via {check_url}")
+    
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(check_url)
+            response.raise_for_status()
+            result = response.json()
+            will_parse = result.get("will_parse_at_runtime", False)
+            logger.info(f"Runtime parsing check result for '{project_name}': {will_parse}")
+            return will_parse
+    except Exception as e:
+        logger.error(f"Error checking if parsing is needed: {e}")
+        # Default to False if we can't check
+        return False
+
 def call_chat_api(project_name: str, query: str, provider: str, model_name: str) -> Optional[Dict]:
     """Calls the backend chat API for a given project, query, provider, and model."""
     if not all([project_name, query, provider, model_name]):
@@ -405,6 +426,20 @@ with main_col:
                 st.markdown(prompt)
 
             logger.info(f"User query for project '{selected_project}' using '{selected_provider}/{selected_model}': {prompt}")
+            
+            # Check if parsing will be needed BEFORE sending the query
+            will_parse_at_runtime = check_if_parsing_needed(selected_project)
+            if will_parse_at_runtime:
+                # Show warning immediately
+                st.warning(
+                    "⏳ Documents will be parsed at runtime, which may cause slower response times. " +
+                    "For better performance, run the pre-processing scripts: \n" +
+                    "1. `./scripts/update_all_token_counts.sh` to calculate token counts\n" +
+                    "2. `./scripts/run_pregenerate_cache.sh` to pre-parse documents",
+                    icon="⏳"
+                )
+                logger.info(f"Warned user about runtime parsing for project '{selected_project}'")
+            
             with st.spinner(f"Asking {selected_model}..."):
                 api_response = call_chat_api(
                     project_name=selected_project,
@@ -420,22 +455,11 @@ with main_col:
                     skipped_files_str = ", ".join([s.split(" (")[0] for s in skipped_sources]) # Extract just filenames
                     st.warning(f"⚠️ Context limit reached. The following sources were skipped: {skipped_files_str}. Consider increasing 'Max Context Tokens' in the sidebar.", icon="⚠️")
                 
-                # Display warning if documents were parsed at runtime
+                # No need to show warning here anymore since we show it at the start
+                # Just log the confirmation that runtime parsing occurred
                 runtime_parsing_occurred = api_response.get("runtime_parsing_occurred", False)
                 if runtime_parsing_occurred:
-                    # Add debug output
-                    st.write(f"Debug - runtime_parsing_occurred: {runtime_parsing_occurred}")
-                    print(f"Debug - runtime_parsing_occurred flag is set to: {runtime_parsing_occurred}")
-                    logger.info(f"Runtime parsing occurred: {runtime_parsing_occurred}")
-                    
-                    # Show the warning with more prominent styling
-                    st.warning(
-                        "⏳ Documents were parsed at runtime, which may cause slower response times. " +
-                        "For better performance, run the pre-processing scripts: \n" +
-                        "1. `./scripts/update_all_token_counts.sh` to calculate token counts\n" +
-                        "2. `./scripts/run_pregenerate_cache.sh` to pre-parse documents",
-                        icon="⏳"
-                    )
+                    logger.info(f"Backend confirmed runtime parsing occurred for project '{selected_project}'")
 
                 assistant_response_content = api_response["response"]
                 sources = api_response.get("sources_consulted", [])

@@ -608,6 +608,41 @@ async def ping():
     logger.info("Ping endpoint '/ping' accessed.")
     return {"status": "ok", "message": "pong"}
 
+@app.get("/check-parsing/{project_name}")
+async def check_if_parsing_needed(project_name: str = FastAPIPath(..., title="The name of the project to check", min_length=1)):
+    """
+    Checks if the specified project will need to be parsed at runtime.
+    Returns true if parsing will be needed (no valid cache exists), false otherwise.
+    """
+    logger.info(f"'/check-parsing/{project_name}' endpoint accessed.")
+    
+    # Validate and get project path
+    project_path = get_project_path(project_name)
+    if not project_path:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
+    
+    # Check if cache exists and is valid
+    cache_file_path = get_cache_file_path(project_name)
+    will_parse_at_runtime = True
+    
+    # If project is already in memory cache, no parsing needed
+    if project_name in IN_MEMORY_DOC_CACHE:
+        logger.info(f"Project '{project_name}' found in memory cache. No parsing needed.")
+        will_parse_at_runtime = False
+    # Otherwise check disk cache
+    elif cache_file_path.is_file():
+        # Try to validate disk cache
+        validated_docs = load_from_disk_cache(project_path, cache_file_path)
+        if validated_docs is not None:
+            logger.info(f"Valid disk cache found for project '{project_name}'. No parsing needed.")
+            will_parse_at_runtime = False
+        else:
+            logger.info(f"Invalid or stale disk cache for project '{project_name}'. Parsing will be needed.")
+    else:
+        logger.info(f"No cache found for project '{project_name}'. Parsing will be needed.")
+    
+    return {"will_parse_at_runtime": will_parse_at_runtime}
+
 @app.get("/models", response_model=AvailableModelsResponse)
 async def get_available_models():
     """ Returns a list of available models grouped by provider. """
