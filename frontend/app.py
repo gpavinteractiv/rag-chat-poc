@@ -15,6 +15,8 @@ MODELS_ENDPOINT = f"{BACKEND_URL}/models"
 MODEL_DETAILS_ENDPOINT = f"{BACKEND_URL}/model-details"
 # PROJECT_TOKENS_ENDPOINT removed
 CHAT_ENDPOINT = f"{BACKEND_URL}/chat"
+PROCESS_PROJECT_ENDPOINT = f"{BACKEND_URL}/projects/{{project_name}}/process" # Added
+PROCESS_ALL_PROJECTS_ENDPOINT = f"{BACKEND_URL}/projects/process-all" # Added
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
@@ -22,6 +24,39 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
+
+# --- Inject CSS for Fixed Chat Input ---
+st.markdown("""
+<style>
+    /* Target the Streamlit chat input container */
+    div[data-testid="stChatInput"] {
+        position: fixed;
+        bottom: 0;
+        left: 0; /* Start from left edge */
+        width: 100%; /* Full viewport width initially */
+        background-color: white; /* Use Streamlit's theme background potentially */
+        padding: 0.5rem 1rem; /* Adjust padding as needed */
+        border-top: 1px solid #ddd; /* Add a subtle top border */
+        z-index: 1000; /* Ensure it's above other elements */
+        box-sizing: border-box; /* Include padding in width calculation */
+    }
+
+    /* Adjust left position and width on wider screens to account for the sidebar */
+    /* Assumes sidebar width is around 330px. Adjust breakpoint/width if needed. */
+    @media (min-width: 768px) {
+        div[data-testid="stChatInput"] {
+            left: 330px;
+            width: calc(100% - 330px);
+        }
+    }
+
+    /* Add padding to the bottom of the main content area to prevent overlap */
+    /* Targets the main block container */
+    section.main > div.block-container {
+        padding-bottom: 80px; /* Adjust based on the input bar's final height */
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Configure logging - Keep at INFO level to avoid file watcher loop with DEBUG
 for handler in logging.root.handlers[:]:
@@ -119,6 +154,7 @@ def get_model_details(provider: str, model_name: str) -> Optional[Dict]:
         return {"notes": f"Error parsing details: {e}"}
 
 # Removed get_project_base_tokens function
+# Removed check_if_parsing_needed function
 
 def call_chat_api(project_name: str, query: str, provider: str, model_name: str) -> Optional[Dict]:
     """Calls the backend chat API for a given project, query, provider, and model."""
@@ -130,12 +166,14 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
     payload = {
         "query": query,
         "provider": provider,
-        "model_name": model_name
+        "model_name": model_name,
+        "max_context_tokens": st.session_state.max_context_tokens # Pass the limit from session state
     }
-    logger.info(f"Sending query to {api_url} using {provider}/{model_name}")
+    logger.info(f"Sending query to {api_url} using {provider}/{model_name} with max_tokens={st.session_state.max_context_tokens}")
 
     try:
-        with httpx.Client(timeout=120.0) as client:
+        # Increase timeout from 120 seconds to 600 seconds (10 minutes) to handle large document parsing
+        with httpx.Client(timeout=600.0) as client:
             response = client.post(api_url, json=payload)
             response.raise_for_status()
             response_data = response.json()
@@ -157,9 +195,11 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
         return None
 
       
+# --- Session State Initialization ---
+if "processing_docs" not in st.session_state:
+    st.session_state.processing_docs = False
+
 # --- Main App UI ---
-st.title("📄🤖 RAG Chat PoC")
-st.caption(f"A proof-of-concept chat agent using Gemini via a FastAPI backend ({BACKEND_URL}).")
 
 
 # --- Project Selection ---
@@ -194,12 +234,73 @@ else:
         st.session_state.selected_project_doc_count = 0
         if "total_document_tokens" in st.session_state: del st.session_state.total_document_tokens
 
+    # --- Project Selector and Update Button ---
+    col1_proj_select, col2_proj_update = st.sidebar.columns([3, 1]) # Adjust ratio as needed
 
-    selected_project = st.sidebar.selectbox(
-        "Choose a project:",
-        options=available_project_names,
-        key="selected_project",
-    )
+    with col1_proj_select:
+        selected_project = st.selectbox(
+            "Choose a project:",
+            options=available_project_names,
+            key="selected_project",
+            label_visibility="collapsed" # Hide label if button provides context
+        )
+
+    # --- Callback function for processing ---
+    def trigger_process_project(project_name: str):
+        if not project_name:
+            st.error("No project selected to process.")
+            return
+
+        st.session_state.processing_docs = True
+        st.sidebar.info(f"Processing '{project_name}'...") # Show info in sidebar
+
+        api_url = PROCESS_PROJECT_ENDPOINT.format(project_name=project_name)
+        logger.info(f"Triggering processing for '{project_name}' via {api_url}")
+
+        try:
+            with httpx.Client(timeout=600.0) as client: # 10 min timeout
+                response = client.post(api_url)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get("success"):
+                    st.toast(f"✅ Project '{project_name}' processed successfully.", icon="✅")
+                    logger.info(f"Processing successful for {project_name}. Output:\n{result.get('stdout')}")
+                    # Clear caches to reflect potential changes
+                    st.cache_data.clear()
+                    # Optionally trigger rerun if needed immediately
+                    # st.rerun()
+                else:
+                    st.error(f"Error processing project '{project_name}'. See logs or Dev Bar.")
+                    logger.error(f"Processing failed for {project_name}. Code: {result.get('return_code')}\nStderr:\n{result.get('stderr')}\nStdout:\n{result.get('stdout')}")
+                    # Display error details if available
+                    if result.get("stderr"):
+                        st.sidebar.expander("Processing Error Details").error(result.get("stderr"))
+
+        except httpx.HTTPStatusError as e:
+            response_json = e.response.json() if e.response else {}
+            detail = response_json.get("detail", e.response.text)
+            st.error(f"API Error processing '{project_name}': {detail}")
+            logger.error(f"API error processing {project_name} ({e.response.status_code}): {detail}")
+        except httpx.RequestError as e:
+            st.error(f"Network Error processing '{project_name}': {e}")
+            logger.error(f"Network error processing {project_name}: {e}")
+        except Exception as e:
+            st.error(f"Unexpected error processing '{project_name}': {e}")
+            logger.error(f"Unexpected error processing {project_name}: {e}", exc_info=True)
+        finally:
+            st.session_state.processing_docs = False
+            # Rerun is handled automatically by Streamlit after callback finishes
+
+    with col2_proj_update:
+        # Show button only in dev mode
+        if st.session_state.get("show_dev_bar", False):
+            st.button("🔄", key="update_project_button",
+                      help=f"Reprocess documents for '{selected_project}'",
+                      on_click=trigger_process_project,
+                      args=(selected_project,),
+                      disabled=st.session_state.get("processing_docs", False) # Disable if already processing
+                      )
 
 
 # --- Model Selection ---
@@ -298,11 +399,74 @@ if st.sidebar.button("Clear Chat History", key="clear_chat"):
     clear_chat_and_tokens()
     st.rerun()
 
-# --- Dev Bar Toggle ---
+# --- Max Context Tokens Input ---
+if "max_context_tokens" not in st.session_state:
+    st.session_state.max_context_tokens = 900000 # Default value
+
+st.sidebar.number_input(
+    "Max Context Tokens:",
+    min_value=10000,
+    max_value=2000000, # Allow up to 2M
+    value=st.session_state.max_context_tokens,
+    step=50000,
+    key="max_context_tokens",
+    help="Maximum number of tokens allowed for the combined context (documents + prompt). Documents exceeding this limit will be skipped."
+)
+
+
+# --- Dev Bar Toggle & Reprocess All Button ---
 if "show_dev_bar" not in st.session_state:
     st.session_state.show_dev_bar = False
 
 show_dev_bar = st.sidebar.toggle("Show Dev Bar", key="show_dev_bar")
+
+# --- Callback function for processing all projects ---
+def trigger_process_all_projects():
+    st.session_state.processing_docs = True
+    st.sidebar.info("Processing all projects...") # Show info in sidebar
+
+    api_url = PROCESS_ALL_PROJECTS_ENDPOINT
+    logger.info(f"Triggering processing for all projects via {api_url}")
+
+    try:
+        with httpx.Client(timeout=1800.0) as client: # 30 min timeout
+            response = client.post(api_url)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("success"):
+                st.toast("✅ All projects processed successfully.", icon="✅")
+                logger.info(f"Processing all projects successful. Output:\n{result.get('stdout')}")
+                # Clear caches to reflect potential changes
+                st.cache_data.clear()
+            else:
+                st.error("Error processing all projects. See logs or Dev Bar.")
+                logger.error(f"Processing all projects failed. Code: {result.get('return_code')}\nStderr:\n{result.get('stderr')}\nStdout:\n{result.get('stdout')}")
+                if result.get("stderr"):
+                    st.sidebar.expander("Processing Error Details").error(result.get("stderr"))
+
+    except httpx.HTTPStatusError as e:
+        response_json = e.response.json() if e.response else {}
+        detail = response_json.get("detail", e.response.text)
+        st.error(f"API Error processing all projects: {detail}")
+        logger.error(f"API error processing all projects ({e.response.status_code}): {detail}")
+    except httpx.RequestError as e:
+        st.error(f"Network Error processing all projects: {e}")
+        logger.error(f"Network error processing all projects: {e}")
+    except Exception as e:
+        st.error(f"Unexpected error processing all projects: {e}")
+        logger.error(f"Unexpected error processing all projects: {e}", exc_info=True)
+    finally:
+        st.session_state.processing_docs = False
+        # Rerun is handled automatically by Streamlit after callback finishes
+
+# Show button only in dev mode
+if st.session_state.get("show_dev_bar", False):
+    st.sidebar.button("Reprocess All Projects", key="reprocess_all_button",
+                      help="Reprocess documents for all projects.",
+                      on_click=trigger_process_all_projects,
+                      disabled=st.session_state.get("processing_docs", False) # Disable if already processing
+                      )
 
 # Removed Debug Logging Toggle section
 
@@ -352,12 +516,20 @@ with main_col:
                 if message["role"] == "assistant" and "model_used" in message:
                      st.caption(f"Model: {message['model_used']}")
 
-        if prompt := st.chat_input(f"Ask '{selected_project}' using {selected_model}...", key="chat_input_box"):
+        # Disable chat input if processing is ongoing
+        chat_input_disabled = st.session_state.get("processing_docs", False)
+        chat_placeholder = "Processing documents..." if chat_input_disabled else f"Ask '{selected_project}' using {selected_model}..."
+
+        if prompt := st.chat_input(chat_placeholder, key="chat_input_box", disabled=chat_input_disabled):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             logger.info(f"User query for project '{selected_project}' using '{selected_provider}/{selected_model}': {prompt}")
+
+            # Removed runtime parsing check and warning logic
+
+            # Standard spinner message
             with st.spinner(f"Asking {selected_model}..."):
                 api_response = call_chat_api(
                     project_name=selected_project,
@@ -367,6 +539,14 @@ with main_col:
                 )
 
             if api_response and "response" in api_response:
+                # Display warning if sources were skipped
+                skipped_sources = api_response.get("skipped_sources", [])
+                if skipped_sources:
+                    skipped_files_str = ", ".join([s.split(" (")[0] for s in skipped_sources]) # Extract just filenames
+                    st.warning(f"⚠️ Context limit reached. The following sources were skipped: {skipped_files_str}. Consider increasing 'Max Context Tokens' in the sidebar.", icon="⚠️")
+
+                # Removed runtime_parsing_occurred check
+
                 assistant_response_content = api_response["response"]
                 sources = api_response.get("sources_consulted", [])
                 model_used = api_response.get("model_used", f"{selected_provider}/{selected_model}")
@@ -452,6 +632,8 @@ if st.session_state.show_dev_bar:
 
         st.divider()
         st.subheader("Debug Info")
+        # Display processing status
+        st.caption(f"Processing Docs Flag: {st.session_state.get('processing_docs', False)}")
         # Always display session state when Dev Bar is shown
         st.caption("Full Session State:")
         st.json(st.session_state)

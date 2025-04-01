@@ -7,26 +7,35 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import httpx # Added for OpenRouter REST API calls
 from pydantic import BaseModel, Field # Import Pydantic
-from typing import List, Optional, Dict, Literal
+from typing import List, Optional, Dict, Literal, Tuple
 from pathlib import Path # Use pathlib for path operations
 import pdfplumber # PDF parsing
 from docx import Document as DocxDocument # DOCX parsing (renamed)
 import markdown as md_parser # Markdown parsing
 import pandas as pd # CSV/Excel parsing
 import traceback # For detailed error logging
-import asyncio # For potential async file operations later
+# import asyncio # No longer needed for async file ops here
 import json # For OpenRouter payload and disk cache
 import time # For cache validation
 import os # For file modification times
 import tiktoken # Added for token counting
+# import concurrent.futures # No longer needed for runtime parsing
+# from functools import partial # No longer needed for runtime parsing
 # from cachetools import cached, TTLCache # Not using cachetools for doc cache
 # Import parsing functions using absolute import from backend perspective
-from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
+# These are still needed by the processing script, but not directly by main.py anymore
+# from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
+import subprocess # For running the processing script
+from fastapi.responses import JSONResponse # For script execution response
 
 # --- Configuration & Setup ---
 # Set logging level to DEBUG to capture detailed info for pricing issue
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
+# Set pdfplumber logger to INFO to reduce verbosity
+logging.getLogger("pdfplumber").setLevel(logging.INFO)
+# Set pdfminer logger to INFO as well
+logging.getLogger("pdfminer").setLevel(logging.INFO)
 load_dotenv()
 logger.info(".env file loaded.")
 
@@ -181,18 +190,22 @@ class ChatRequest(BaseModel):
     query: str = Field(..., example="Summarize the key points of the provided documents.")
     provider: Literal["google", "openrouter"] = Field(..., example="openrouter") # Added provider selection
     model_name: str = Field(..., example="mistralai/mistral-7b-instruct") # Added model name selection
+    max_context_tokens: Optional[int] = Field(None, example=900000, description="Maximum tokens allowed for the context (documents + prompt). If None, uses a default.") # Added max tokens
     # history: Optional[List[ChatMessage]] = None # Keep commented for now
 
 class ChatResponse(BaseModel):
     response: str
     sources_consulted: List[str] # List of filenames used in context
+    skipped_sources: List[str] = Field([], description="List of document filenames skipped because adding them would exceed the token limit.") # Added skipped sources
     model_used: str # Added to confirm which model responded
     input_tokens: Optional[int] = None # Added token counts
     output_tokens: Optional[int] = None # Added token counts
+    # runtime_parsing_occurred: bool = Field(False, description="Flag indicating whether documents were parsed at runtime rather than loaded from cache.") # Removed
 
 class DocumentContent(BaseModel):
     filename: str
-    content: str
+    content: Optional[str] # Content can be None if parsing fails or file is skipped
+    token_count: Optional[int] = None # Added pre-calculated token count
     error: Optional[str] = None # To report if parsing failed
 
 class ModelInfo(BaseModel):
@@ -216,7 +229,7 @@ class ModelDetailsResponse(BaseModel):
     details: ModelDetails
 
 # --- File Parsing Utilities ---
-# Parsing functions moved to parsing_utils.py
+# Parsing functions moved to parsing_utils.py and are no longer called directly by main.py
 
 # --- Cache Helper Functions ---
 
@@ -282,10 +295,11 @@ def load_from_disk_cache(project_path: Path, cache_file_path: Path) -> Optional[
                 is_cache_valid = False
                 break
 
-            # If valid so far, reconstruct DocumentContent
+            # If valid so far, reconstruct DocumentContent, including token count if available
             validated_docs.append(DocumentContent(
                 filename=filename,
                 content=doc_cache_info.get("parsed_content"),
+                token_count=doc_cache_info.get("token_count"), # Load token count from cache
                 error=doc_cache_info.get("parsing_error")
             ))
 
@@ -304,7 +318,7 @@ def load_from_disk_cache(project_path: Path, cache_file_path: Path) -> Optional[
         return None
 
 def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
-    """Saves parsed document data (including mod times) to the disk cache."""
+    """Saves parsed document data (including mod times and token counts) to the disk cache."""
     cache_file_path = get_cache_file_path(project_name)
     logger.info(f"Saving freshly parsed data to disk cache: {cache_file_path}")
     try:
@@ -312,7 +326,7 @@ def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
             "cache_version": CACHE_VERSION,
             "project_name": project_name,
             "generation_timestamp": time.time(),
-            "documents": documents_data # Expects dict {filename: {"parsed_content":..., "source_mod_time":..., "parsing_error":...}}
+            "documents": documents_data # Expects dict {filename: {"parsed_content":..., "source_mod_time":..., "token_count":..., "parsing_error":...}}
         }
         cache_file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_file_path, 'w', encoding='utf-8') as f:
@@ -320,6 +334,57 @@ def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
         logger.info(f"Successfully saved cache for project '{project_name}'.")
     except Exception as e:
         logger.error(f"Error saving disk cache for project '{project_name}': {e}", exc_info=True)
+
+def save_document_to_cache(project_name: str, filename: str, doc_data: dict):
+    """Saves a single document to the cache, creating or updating the cache file."""
+    cache_file_path = get_cache_file_path(project_name)
+    
+    # Create cache directory if it doesn't exist
+    cache_file_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Load existing cache or create new
+    if cache_file_path.exists():
+        try:
+            with open(cache_file_path, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+                
+                # Validate cache format
+                if cache_data.get("cache_version") != CACHE_VERSION or cache_data.get("project_name") != project_name:
+                    logger.warning(f"Existing cache file for {project_name} has incorrect version or project name. Creating new cache.")
+                    cache_data = {
+                        "cache_version": CACHE_VERSION,
+                        "project_name": project_name,
+                        "generation_timestamp": time.time(),
+                        "documents": {}
+                    }
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Existing cache file for {project_name} is corrupted: {e}. Creating new.")
+            cache_data = {
+                "cache_version": CACHE_VERSION,
+                "project_name": project_name,
+                "generation_timestamp": time.time(),
+                "documents": {}
+            }
+    else:
+        # Create new cache
+        cache_data = {
+            "cache_version": CACHE_VERSION,
+            "project_name": project_name,
+            "generation_timestamp": time.time(),
+            "documents": {}
+        }
+    
+    # Update the document in the cache
+    cache_data["documents"][filename] = doc_data
+    cache_data["generation_timestamp"] = time.time()  # Update timestamp
+    
+    # Write updated cache back to file
+    try:
+        with open(cache_file_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+        logger.info(f"Updated cache for '{project_name}' with document: {filename}")
+    except Exception as e:
+        logger.error(f"Error updating cache file for {project_name} with document {filename}: {e}")
 
 
 # --- Project Loading Logic ---
@@ -366,134 +431,17 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
         # Disk cache is valid, store in memory and return
         project_data = {"system_prompt": system_prompt, "documents": validated_docs_from_cache}
         IN_MEMORY_DOC_CACHE[project_name] = project_data
-        return project_data
-
-    # 3. Parse Fresh (Cache miss or invalid)
-    logger.info(f"Parsing documents fresh for project '{project_name}' (cache miss or invalid).")
-    parsed_docs_list: List[DocumentContent] = []
-    disk_cache_payload: Dict[str, dict] = {} # To store data for saving to disk
-
-    filelist_csv = project_path / "filelist.csv"
-    if not filelist_csv.is_file():
-        logger.error(f"filelist.csv not found for project {project_name}. Cannot load documents.")
-        # Still cache this result (empty docs)
-        project_data = {"system_prompt": system_prompt, "documents": []}
-        IN_MEMORY_DOC_CACHE[project_name] = project_data
-        # Don't save an empty disk cache? Or save it to indicate it was checked?
-        # Let's save it to show it was processed.
-        save_to_disk_cache(project_name, {})
-        return project_data
-
-    try:
-        try:
-             # Ensure pandas is imported if needed
-             import pandas as pd
-             df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True)
-        except ValueError as ve:
-             logger.error(f"Column 'file_name' not found in {filelist_csv}: {ve}")
-             raise FileNotFoundError(f"'file_name' column missing in {filelist_csv}") from ve
-        except pd.errors.EmptyDataError:
-             logger.warning(f"{filelist_csv} is empty. No documents to load.")
-             # Cache empty result
-             project_data = {"system_prompt": system_prompt, "documents": []}
-             IN_MEMORY_DOC_CACHE[project_name] = project_data
-             save_to_disk_cache(project_name, {})
-             return project_data
-        except ImportError:
-             logger.error("Pandas library not found. Please install it in the backend virtual environment (`pip install pandas`) to read filelist.csv.")
-             raise HTTPException(status_code=500, detail="Pandas library not installed in backend environment.")
-        except Exception as e:
-             logger.error(f"Error reading {filelist_csv}: {e}")
-             raise # Re-raise to be caught by the outer try-except
-
-        filenames_to_parse = df["file_name"].dropna().unique().tolist()
-        logger.info(f"Found {len(filenames_to_parse)} unique filenames to parse in {filelist_csv.name}.")
-
-        for filename in filenames_to_parse:
-            logger.debug(f"Processing filename from CSV: '{filename}'")
-            file_path = (project_path / filename).resolve()
-            logger.debug(f"Resolved path: {file_path}")
-
-            doc_content: Optional[DocumentContent] = None
-            parsing_error_msg: Optional[str] = None
-            parsed_text: Optional[str] = None
-            mod_time: Optional[float] = None
-
-            if project_path.resolve() not in file_path.resolve().parents:
-                logger.warning(f"Skipping file outside project directory: {filename}")
-                parsing_error_msg = "Access Denied: File is outside project scope."
-                mod_time = None # Cannot get mod time if outside scope
-            elif not file_path.is_file():
-                logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}")
-                parsing_error_msg = "File not found."
-                mod_time = None # File doesn't exist
-            else:
-                mod_time = get_modification_time(file_path)
-                if mod_time is None:
-                     parsing_error_msg = "File inaccessible or error getting modification time."
-                else:
-                    # --- Actual Parsing ---
-                    suffix = file_path.suffix.lower()
-                    logger.debug(f"File suffix: '{suffix}' for {filename}")
-                    try:
-                        if suffix == ".pdf": doc_content = parse_pdf(file_path)
-                        elif suffix == ".docx": doc_content = parse_docx(file_path)
-                        elif suffix == ".md": doc_content = parse_markdown(file_path)
-                        elif suffix == ".csv" and file_path.name != filelist_csv.name:
-                             doc_content = parse_csv(file_path)
-                        elif file_path.name == filelist_csv.name:
-                             logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
-                             doc_content = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", error=None)
-                        else:
-                            logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
-                            doc_content = DocumentContent(filename=filename, content=None, error=f"Unsupported file type: {suffix}")
-
-                        if doc_content:
-                             parsed_text = doc_content.content
-                             parsing_error_msg = doc_content.error
-                             if parsing_error_msg:
-                                  logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
-                             else:
-                                  logger.info(f" -> Successfully parsed {filename}.")
-                        else:
-                             # Should not happen
-                             logger.error(f" -> Failed to get DocumentContent object for {filename}. Storing error.")
-                             parsing_error_msg = "Unknown parsing failure."
-
-                    except Exception as e:
-                         logger.error(f" -> Unexpected error parsing file {filename}: {e}", exc_info=True)
-                         parsing_error_msg = f"Unexpected error: {e}"
-                         parsed_text = None # Ensure content is None on error
-
-            # --- Store results for both return value and disk cache payload ---
-            parsed_docs_list.append(DocumentContent(
-                filename=filename,
-                content=parsed_text,
-                error=parsing_error_msg
-            ))
-            disk_cache_payload[filename] = {
-                "parsed_content": parsed_text,
-                "source_mod_time": mod_time,
-                "parsing_error": parsing_error_msg
-            }
-
-        # --- Save to Disk Cache and In-Memory Cache ---
-        save_to_disk_cache(project_name, disk_cache_payload)
-        project_data = {"system_prompt": system_prompt, "documents": parsed_docs_list}
+        # Disk cache is valid, store in memory and return
+        project_data = {"system_prompt": system_prompt, "documents": validated_docs_from_cache}
         IN_MEMORY_DOC_CACHE[project_name] = project_data
         return project_data
 
-    except FileNotFoundError as fnf:
-         # This might happen if filelist.csv is missing 'file_name' column
-         logger.error(f"Project loading failed for {project_name}: {fnf}")
-         # Return empty data but don't cache this failure state? Or cache it?
-         # Let's return empty but not cache, forcing re-parse next time.
-         return {"system_prompt": system_prompt, "documents": []}
-    # Removed ImportError catch here as it's handled within the inner try
-    except Exception as e:
-        logger.error(f"Unexpected error loading project {project_name}: {e}\n{traceback.format_exc()}")
-        # Return empty data but don't cache
-        return {"system_prompt": system_prompt, "documents": []}
+    # 3. Cache Miss or Invalid - Return empty documents
+    logger.warning(f"No valid cache found for project '{project_name}'. Returning empty document list. Run processing script to generate cache.")
+    project_data = {"system_prompt": system_prompt, "documents": []}
+    # Optionally cache the empty result to avoid repeated disk checks? For now, let's not.
+    # IN_MEMORY_DOC_CACHE[project_name] = project_data
+    return project_data
 
 # --- Token Counting Utility ---
 # Cache encodings to avoid re-fetching them repeatedly
@@ -551,6 +499,8 @@ async def ping():
     """ Simple health check endpoint. """
     logger.info("Ping endpoint '/ping' accessed.")
     return {"status": "ok", "message": "pong"}
+
+# Removed /check-parsing endpoint
 
 @app.get("/models", response_model=AvailableModelsResponse)
 async def get_available_models():
@@ -682,54 +632,89 @@ async def chat_with_project(
     if not project_path:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
 
-    # 4. Load project data (system prompt + parsed documents)
+    # 4. Load project data (system prompt + parsed documents from cache ONLY)
     try:
         project_data = load_project_data(project_path)
+        # Check if documents were loaded (i.e., cache was valid)
+        if not project_data.get("documents"):
+            logger.warning(f"No documents loaded for project '{project_name}'. Cache might be missing or invalid. Chatting without document context.")
+            # Optionally raise an error or return a specific message if context is crucial
+            # raise HTTPException(status_code=404, detail=f"Document cache for project '{project_name}' not found. Please process the project first.")
     except Exception as e:
         logger.error(f"Failed to load data for project {project_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load project data: {e}")
 
     system_prompt = project_data.get("system_prompt", "Error: System prompt missing.")
     documents: List[DocumentContent] = project_data.get("documents", [])
-    source_filenames = [doc.filename for doc in documents]
+    # source_filenames = [doc.filename for doc in documents] # We'll build this list based on included docs
 
-    # 5. Construct the full context (same logic as before)
-    context_parts = [system_prompt]
-    context_parts.append("\n<DOCUMENT_CONTEXT>")
+    # 5. Construct Context based on Token Limit
+    DEFAULT_MAX_CONTEXT_TOKENS = 900_000 # Default limit if not provided
+    effective_max_tokens = request.max_context_tokens if request.max_context_tokens and request.max_context_tokens > 0 else DEFAULT_MAX_CONTEXT_TOKENS
+    logger.info(f"Using effective max context tokens: {effective_max_tokens}")
+
+    # Calculate base prompt tokens (system prompt + query + separators/structure)
+    # Estimate tokens for separators and structure conservatively
+    base_prompt_structure = f"{system_prompt}\n<DOCUMENT_CONTEXT>\n</DOCUMENT_CONTEXT>\n\nUser Query: {request.query}"
+    base_prompt_tokens = count_tokens(base_prompt_structure, request.model_name)
+    # Add estimated tokens per document for separators like "--- START DOC ---", etc.
+    tokens_per_doc_overhead = count_tokens("\n\n--- START DOCUMENT X: filename.ext ---\n\n--- END DOCUMENT X: filename.ext ---", request.model_name)
+
+    context_parts = [system_prompt, "\n<DOCUMENT_CONTEXT>"]
+    included_sources: List[str] = []
+    skipped_sources: List[str] = []
+    current_token_usage = base_prompt_tokens
+    remaining_docs = list(documents) # Create a mutable list to track remaining docs
+
     if not documents:
-         context_parts.append("\n[No documents loaded for this project.]")
+        context_parts.append("\n[No documents loaded for this project.]")
     else:
-        logger.info(f"Constructing context with {len(documents)} documents for project {project_name}.")
-        # Simple length check - NEEDS PROPER TOKENIZATION AND STRATEGY
-        # Calculate rough character limit per doc based on a total context goal (e.g., 1M chars)
-        total_char_limit = 1_000_000 # Target total characters for context (adjust as needed)
-        base_prompt_len = len(system_prompt) + len(request.query) + 500 # Estimate overhead
-        remaining_chars = total_char_limit - base_prompt_len
-        chars_per_doc = remaining_chars // len(documents) if len(documents) > 0 else remaining_chars
-        if chars_per_doc < 100: # Ensure a minimum reasonable limit
-             chars_per_doc = 100
-             logger.warning(f"Calculated low character limit per doc ({chars_per_doc}), potentially too many docs or too long base prompt.")
-
+        logger.info(f"Attempting to construct context with {len(documents)} documents for project {project_name} within {effective_max_tokens} token limit.")
         for i, doc in enumerate(documents):
-            context_parts.append(f"\n\n--- START DOCUMENT {i+1}: {doc.filename} ---")
-            if doc.error:
-                context_parts.append(f"\n[Parsing Error: {doc.error}]")
-            elif doc.content:
-                if len(doc.content) > chars_per_doc:
-                     truncated_content = doc.content[:chars_per_doc]
-                     context_parts.append(f"\n{truncated_content}")
-                     context_parts.append(f"\n[... Content truncated due to length ...]")
-                     logger.warning(f"Truncated content for {doc.filename} to {chars_per_doc} chars.")
-                else:
-                     context_parts.append(f"\n{doc.content}")
+            # Check if document has valid precalculated token count and *some* content (even if error is flagged)
+            if doc.token_count is None or doc.token_count <= 0:
+                logger.warning(f"Skipping document {doc.filename} due to missing or invalid precalculated token count ({doc.token_count}).")
+                skipped_sources.append(f"{doc.filename} (invalid token count)")
+                remaining_docs.pop(0) # Remove from remaining list
+                continue
+            # Also skip if content is truly None (e.g., file not found during parse)
+            if doc.content is None:
+                logger.warning(f"Skipping document {doc.filename} because content is None (likely file not found or inaccessible during parse).")
+                skipped_sources.append(f"{doc.filename} (no content)")
+                remaining_docs.pop(0) # Remove from remaining list
+                continue
+
+            # Calculate potential usage if this doc is added
+            potential_usage = current_token_usage + doc.token_count + tokens_per_doc_overhead
+
+            # --- DEBUG LOGGING REMOVED ---
+
+            if potential_usage <= effective_max_tokens:
+                # Add the document
+                context_parts.append(f"\n\n--- START DOCUMENT {i+1}: {doc.filename} ---")
+                context_parts.append(f"\n{doc.content}")
+                context_parts.append(f"\n--- END DOCUMENT {i+1}: {doc.filename} ---")
+                current_token_usage = potential_usage
+                included_sources.append(doc.filename)
+                remaining_docs.pop(0) # Remove from remaining list
+                logger.debug(f"Included document: {doc.filename} (Tokens: {doc.token_count}). Current total tokens: {current_token_usage}")
             else:
-                context_parts.append("\n[Document loaded but contains no text content]")
-            context_parts.append(f"\n--- END DOCUMENT {i+1}: {doc.filename} ---")
+                # Document exceeds limit, stop adding documents
+                logger.warning(f"Skipping document {doc.filename} (Tokens: {doc.token_count}) as adding it would exceed the limit ({potential_usage} > {effective_max_tokens}).")
+                # Add this and all subsequent documents to skipped_sources
+                skipped_sources.append(f"{doc.filename} (limit reached)")
+                skipped_sources.extend([f"{rem_doc.filename} (limit reached)" for rem_doc in remaining_docs[1:]]) # Add remaining filenames
+                break # Stop iterating
+
     context_parts.append("\n</DOCUMENT_CONTEXT>\n")
     context_parts.append(f"\nUser Query: {request.query}")
     full_prompt = "".join(context_parts)
-    input_token_count = count_tokens(full_prompt, request.model_name)
-    logger.info(f"Approximate prompt length: {len(full_prompt)} characters. Estimated input tokens: {input_token_count}")
+
+    # Calculate final input token count based on the actual assembled prompt
+    final_input_token_count = count_tokens(full_prompt, request.model_name)
+    logger.info(f"Final prompt length: {len(full_prompt)} characters. Final input tokens: {final_input_token_count}")
+    if skipped_sources:
+         logger.warning(f"Skipped {len(skipped_sources)} sources due to token limit: {skipped_sources}")
 
     # 6. Send to the selected LLM Provider/Model
     llm_response_text = ""
@@ -810,10 +795,12 @@ async def chat_with_project(
         logger.info(f"Estimated output tokens: {output_token_count}")
         return ChatResponse(
             response=llm_response_text,
-            sources_consulted=source_filenames,
+            sources_consulted=included_sources, # Return list of included sources
+            skipped_sources=skipped_sources, # Return list of skipped sources
             model_used=f"{request.provider}/{request.model_name}", # Include provider in response
-            input_tokens=input_token_count,
+            input_tokens=final_input_token_count, # Use final calculated input tokens
             output_tokens=output_token_count
+            # runtime_parsing_occurred removed
         )
 
     except httpx.HTTPStatusError as hse:
@@ -949,6 +936,95 @@ async def get_model_details(
     except Exception as e:
         logger.error(f"Unexpected error fetching model details for {provider}/{model_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error fetching model details: {e}")
+
+
+# --- Script Execution Endpoints ---
+
+@app.post("/projects/{project_name}/process")
+async def process_project(
+    project_name: str = FastAPIPath(..., title="The name of the project to process", min_length=1)
+):
+    """Triggers the document processing script for a specific project."""
+    logger.info(f"'/projects/{project_name}/process' endpoint accessed.")
+
+    # Validate project exists (optional but good practice)
+    project_path = get_project_path(project_name)
+    if not project_path:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
+
+    script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
+    # Use the absolute path to the project directory
+    project_dir_abs_path = project_path.resolve()
+
+    command = ["/bin/sh", str(script_path), str(project_dir_abs_path)]
+    logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
+
+    try:
+        # Run synchronously
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600) # 10 min timeout
+
+        logger.info(f"Script execution finished for {project_name}. Return code: {result.returncode}")
+        logger.debug(f"Script stdout:\n{result.stdout}")
+        if result.stderr:
+            logger.warning(f"Script stderr:\n{result.stderr}")
+
+        # Clear in-memory cache for this project after processing
+        if project_name in IN_MEMORY_DOC_CACHE:
+            del IN_MEMORY_DOC_CACHE[project_name]
+            logger.info(f"Cleared in-memory cache for project '{project_name}' after processing.")
+
+        return JSONResponse(content={
+            "success": result.returncode == 0,
+            "message": f"Processing script for '{project_name}' finished.",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "return_code": result.returncode
+        })
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout expired while running processing script for {project_name}.")
+        raise HTTPException(status_code=504, detail=f"Processing script for '{project_name}' timed out.")
+    except Exception as e:
+        logger.error(f"Error executing processing script for {project_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error executing processing script: {e}")
+
+
+@app.post("/projects/process-all")
+async def process_all_projects():
+    """Triggers the document processing script for all projects."""
+    logger.info("'/projects/process-all' endpoint accessed.")
+
+    script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
+    command = ["/bin/sh", str(script_path), "--all-projects"]
+    logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
+
+    try:
+        # Run synchronously - might take a long time! Increase timeout significantly.
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=1800) # 30 min timeout
+
+        logger.info(f"Script execution finished for all projects. Return code: {result.returncode}")
+        logger.debug(f"Script stdout:\n{result.stdout}")
+        if result.stderr:
+            logger.warning(f"Script stderr:\n{result.stderr}")
+
+        # Clear entire in-memory cache after processing all
+        IN_MEMORY_DOC_CACHE.clear()
+        logger.info("Cleared entire in-memory cache after processing all projects.")
+
+        return JSONResponse(content={
+            "success": result.returncode == 0,
+            "message": "Processing script for all projects finished.",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "return_code": result.returncode
+        })
+
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout expired while running processing script for all projects.")
+        raise HTTPException(status_code=504, detail="Processing script for all projects timed out.")
+    except Exception as e:
+        logger.error(f"Error executing processing script for all projects: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error executing processing script for all projects: {e}")
 
 
 # --- Uvicorn runner ---
