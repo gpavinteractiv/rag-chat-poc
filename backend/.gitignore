@@ -1,0 +1,21 @@
+# Environment files
+.env
+
+# Python virtual environment
+venv/
+
+# Cache directory for parsed documents
+.cache/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log

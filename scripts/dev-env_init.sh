@@ -135,8 +135,17 @@ if [ ! -d "$BACKEND_VENV_DIR" ]; then
         exit 1
     fi
 else
-    log "Backend venv already exists. Skipping creation."
-    log "Run './scripts/rebuild_poc.sh -u' to update dependencies if needed."
+    log "Backend venv already exists. Ensuring dependencies are up-to-date..." # Changed log
+    # Activate and install deps (update install)
+    (
+        set +u # Allow unset variables during source
+        source "$BACKEND_VENV_DIR/bin/activate"
+        set -u
+
+        pip install --upgrade pip # Good practice to upgrade pip
+        pip install -r "$BACKEND_REQ_FILE"
+    ) || { log_error "Failed during backend dependency update."; exit 1; } # Adjusted error message
+    log_success "Backend dependencies checked/updated." # Changed log
 fi
 
 # 4. Create Frontend Virtual Environment and Install Dependencies
@@ -161,8 +170,17 @@ if [ ! -d "$FRONTEND_VENV_DIR" ]; then
         exit 1
     fi
 else
-    log "Frontend venv already exists. Skipping creation."
-    log "Run './scripts/rebuild_poc.sh -u' to update dependencies if needed."
+    log "Frontend venv already exists. Ensuring dependencies are up-to-date..." # Changed log
+    # Activate and install deps (update install)
+    (
+        set +u # Allow unset variables during source
+        source "$FRONTEND_VENV_DIR/bin/activate"
+        set -u
+
+        pip install --upgrade pip # Good practice to upgrade pip
+        pip install -r "$FRONTEND_REQ_FILE"
+    ) || { log_error "Failed during frontend dependency update."; exit 1; } # Adjusted error message
+    log_success "Frontend dependencies checked/updated." # Changed log
 fi
 
 log_success "--------------------------------------------------------"

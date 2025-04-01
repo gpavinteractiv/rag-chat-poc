@@ -68,8 +68,8 @@ start_apps() {
         set +u # Disable strict unset variable check for 'source'
         source "$BACKEND_VENV_DIR/bin/activate"
         set -u
-        # Start uvicorn, redirect stdout/stderr to logs, run in background
-        nohup uvicorn main:app --host 0.0.0.0 --port 8000 --reload &> uvicorn.log &
+        # Start uvicorn using full path, redirect stdout/stderr to logs, run in background
+        nohup "$BACKEND_VENV_DIR/bin/uvicorn" main:app --host 0.0.0.0 --port 8000 --reload &> uvicorn.log &
         backend_pid=$!
         echo "backend_pid=$backend_pid" > "$PID_FILE" # Store PID
         log "Backend (uvicorn) started with PID $backend_pid. Logs: $BACKEND_DIR/uvicorn.log"
@@ -85,9 +85,9 @@ start_apps() {
         set +u
         source "$FRONTEND_VENV_DIR/bin/activate"
         set -u
-        # Start streamlit, redirect stdout/stderr, run in background
+        # Start streamlit using full path, redirect stdout/stderr, run in background
         # Streamlit should automatically detect .streamlit/config.toml
-        nohup streamlit run app.py --server.port 8501 --server.address 0.0.0.0 &> streamlit.log &
+        nohup "$FRONTEND_VENV_DIR/bin/streamlit" run app.py --server.port 8501 --server.address 0.0.0.0 &> streamlit.log &
         frontend_pid=$!
         echo "frontend_pid=$frontend_pid" >> "$PID_FILE" # Append PID
         log "Frontend (streamlit) started with PID $frontend_pid. Logs: $FRONTEND_DIR/streamlit.log"

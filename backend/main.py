@@ -15,9 +15,11 @@ import markdown as md_parser # Markdown parsing
 import pandas as pd # CSV/Excel parsing
 import traceback # For detailed error logging
 import asyncio # For potential async file operations later
-import json # For OpenRouter payload
+import json # For OpenRouter payload and disk cache
+import time # For cache validation
+import os # For file modification times
 import tiktoken # Added for token counting
-from cachetools import cached, TTLCache # For caching OpenRouter model data
+# from cachetools import cached, TTLCache # Not using cachetools for doc cache
 # Import parsing functions using absolute import from backend perspective
 from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
 
@@ -29,11 +31,18 @@ load_dotenv()
 logger.info(".env file loaded.")
 
 # --- Project Directory Setup ---
-PROJECTS_DIR = Path(__file__).parent.parent / "projects"
+PROJECT_ROOT = Path(__file__).parent.parent # Define project root relative to this file
+PROJECTS_DIR = PROJECT_ROOT / "projects"
 logger.info(f"Projects directory set to: {PROJECTS_DIR}")
 if not PROJECTS_DIR.is_dir():
     logger.error(f"Projects directory not found at {PROJECTS_DIR}")
     raise RuntimeError(f"Projects directory not found: {PROJECTS_DIR}")
+
+# --- Cache Configuration ---
+BACKEND_DIR = Path(__file__).parent
+CACHE_DIR = BACKEND_DIR / ".cache" / "parsed_docs"
+CACHE_VERSION = 1
+IN_MEMORY_DOC_CACHE = {} # Simple dictionary for in-memory cache
 
 # --- API Key Retrieval ---
 google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -209,109 +218,286 @@ class ModelDetailsResponse(BaseModel):
 # --- File Parsing Utilities ---
 # Parsing functions moved to parsing_utils.py
 
+# --- Cache Helper Functions ---
+
+def get_cache_file_path(project_name: str) -> Path:
+    """Constructs the path to the project's disk cache file."""
+    return CACHE_DIR / f"{project_name}.json"
+
+def get_modification_time(file_path: Path) -> Optional[float]:
+    """Gets the last modification time of a file."""
+    try:
+        # Use os.path.getmtime for potentially better compatibility across OS
+        return os.path.getmtime(file_path)
+    except FileNotFoundError:
+        logger.warning(f"File not found when checking modification time: {file_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error getting modification time for {file_path}: {e}", exc_info=True)
+        return None
+
+def load_from_disk_cache(project_path: Path, cache_file_path: Path) -> Optional[List[DocumentContent]]:
+    """Loads and validates data from the disk cache file."""
+    project_name = project_path.name
+    if not cache_file_path.is_file():
+        logger.info(f"Disk cache file not found for project '{project_name}': {cache_file_path}")
+        return None
+
+    logger.info(f"Attempting to load from disk cache: {cache_file_path}")
+    try:
+        with open(cache_file_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+
+        # Basic validation
+        if cache_data.get("cache_version") != CACHE_VERSION:
+            logger.warning(f"Cache version mismatch for {project_name}. Expected {CACHE_VERSION}, found {cache_data.get('cache_version')}. Invalidating cache.")
+            return None
+        if cache_data.get("project_name") != project_name:
+            logger.warning(f"Project name mismatch in cache file {cache_file_path}. Expected '{project_name}', found '{cache_data.get('project_name')}'. Invalidating cache.")
+            return None
+
+        cached_docs_dict = cache_data.get("documents", {})
+        validated_docs = []
+        is_cache_valid = True
+
+        # Validate modification times
+        for filename, doc_cache_info in cached_docs_dict.items():
+            source_file_path = (project_path / filename).resolve()
+            cached_mod_time = doc_cache_info.get("source_mod_time")
+
+            # Check if file is still within project dir (important if filelist.csv was manually edited)
+            if project_path.resolve() not in source_file_path.resolve().parents:
+                 logger.warning(f"Cached file '{filename}' is outside project directory '{project_path}'. Invalidating cache.")
+                 is_cache_valid = False
+                 break # Invalidate whole cache if one file is bad
+
+            current_mod_time = get_modification_time(source_file_path)
+
+            if current_mod_time is None: # Source file deleted or inaccessible
+                logger.warning(f"Source file '{filename}' for cached entry not found or inaccessible. Invalidating cache.")
+                is_cache_valid = False
+                break
+            if cached_mod_time is None or current_mod_time > cached_mod_time:
+                logger.info(f"Source file '{filename}' has been modified since cache generation (Current: {current_mod_time}, Cached: {cached_mod_time}). Invalidating cache.")
+                is_cache_valid = False
+                break
+
+            # If valid so far, reconstruct DocumentContent
+            validated_docs.append(DocumentContent(
+                filename=filename,
+                content=doc_cache_info.get("parsed_content"),
+                error=doc_cache_info.get("parsing_error")
+            ))
+
+        if is_cache_valid:
+            logger.info(f"Disk cache for project '{project_name}' is valid.")
+            return validated_docs
+        else:
+            logger.info(f"Disk cache for project '{project_name}' is invalid or stale.")
+            return None
+
+    except json.JSONDecodeError as jde:
+        logger.error(f"Error decoding JSON from cache file {cache_file_path}: {jde}. Invalidating cache.")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading or validating disk cache {cache_file_path}: {e}", exc_info=True)
+        return None
+
+def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
+    """Saves parsed document data (including mod times) to the disk cache."""
+    cache_file_path = get_cache_file_path(project_name)
+    logger.info(f"Saving freshly parsed data to disk cache: {cache_file_path}")
+    try:
+        cache_data = {
+            "cache_version": CACHE_VERSION,
+            "project_name": project_name,
+            "generation_timestamp": time.time(),
+            "documents": documents_data # Expects dict {filename: {"parsed_content":..., "source_mod_time":..., "parsing_error":...}}
+        }
+        cache_file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_file_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+        logger.info(f"Successfully saved cache for project '{project_name}'.")
+    except Exception as e:
+        logger.error(f"Error saving disk cache for project '{project_name}': {e}", exc_info=True)
+
+
 # --- Project Loading Logic ---
 def get_project_path(project_name: str) -> Optional[Path]:
     """Gets the validated path for a project."""
     project_path = (PROJECTS_DIR / project_name).resolve()
-    if PROJECTS_DIR in project_path.parents and project_path.is_dir():
+    # Ensure project_path is actually inside PROJECTS_DIR and is a directory
+    if project_path.is_dir() and PROJECTS_DIR.resolve() in project_path.resolve().parents:
         return project_path
-    logger.warning(f"Project path is outside the allowed directory or is not a directory: {project_name}")
     logger.warning(f"Invalid or non-existent project requested: {project_name}")
     return None
 
 def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | str]:
-    """Loads system prompt and parses all documents listed in filelist.csv."""
+    """
+    Loads system prompt and document content for a project, utilizing in-memory
+    and disk caches. Parses fresh if cache is missing or stale, and updates disk cache.
+    """
     project_name = project_path.name
     logger.info(f"Loading data for project: {project_name}")
-    data = {"system_prompt": "", "documents": []}
 
+    # 1. Check In-Memory Cache
+    if project_name in IN_MEMORY_DOC_CACHE:
+        logger.info(f"Using in-memory cache for project '{project_name}'.")
+        return IN_MEMORY_DOC_CACHE[project_name]
+
+    # --- Load System Prompt (Always load fresh for simplicity) ---
+    system_prompt = "Default System Prompt: You are a helpful assistant."
     prompt_file = project_path / "system_prompt.txt"
     if prompt_file.is_file():
         try:
-            data["system_prompt"] = prompt_file.read_text(encoding="utf-8").strip()
+            system_prompt = prompt_file.read_text(encoding="utf-8").strip()
             logger.info(f"Loaded system prompt for {project_name}.")
         except Exception as e:
             logger.error(f"Error reading system prompt for {project_name}: {e}")
-            data["system_prompt"] = f"Error: Could not load system prompt. {e}"
+            system_prompt = f"Error: Could not load system prompt. {e}"
     else:
         logger.warning(f"system_prompt.txt not found for project {project_name}.")
-        data["system_prompt"] = "Default System Prompt: You are a helpful assistant."
+
+    # 2. Check Disk Cache
+    cache_file_path = get_cache_file_path(project_name)
+    validated_docs_from_cache = load_from_disk_cache(project_path, cache_file_path)
+
+    if validated_docs_from_cache is not None:
+        # Disk cache is valid, store in memory and return
+        project_data = {"system_prompt": system_prompt, "documents": validated_docs_from_cache}
+        IN_MEMORY_DOC_CACHE[project_name] = project_data
+        return project_data
+
+    # 3. Parse Fresh (Cache miss or invalid)
+    logger.info(f"Parsing documents fresh for project '{project_name}' (cache miss or invalid).")
+    parsed_docs_list: List[DocumentContent] = []
+    disk_cache_payload: Dict[str, dict] = {} # To store data for saving to disk
 
     filelist_csv = project_path / "filelist.csv"
     if not filelist_csv.is_file():
         logger.error(f"filelist.csv not found for project {project_name}. Cannot load documents.")
-        return data
+        # Still cache this result (empty docs)
+        project_data = {"system_prompt": system_prompt, "documents": []}
+        IN_MEMORY_DOC_CACHE[project_name] = project_data
+        # Don't save an empty disk cache? Or save it to indicate it was checked?
+        # Let's save it to show it was processed.
+        save_to_disk_cache(project_name, {})
+        return project_data
 
     try:
         try:
-             df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True) # Changed "file name" to "file_name"
+             # Ensure pandas is imported if needed
+             import pandas as pd
+             df = pd.read_csv(filelist_csv, usecols=["file_name"], skipinitialspace=True)
         except ValueError as ve:
-             logger.error(f"Column 'file_name' not found in {filelist_csv}: {ve}") # Changed "file name" to "file_name"
-             raise FileNotFoundError(f"'file_name' column missing in {filelist_csv}") from ve # Changed "file name" to "file_name"
+             logger.error(f"Column 'file_name' not found in {filelist_csv}: {ve}")
+             raise FileNotFoundError(f"'file_name' column missing in {filelist_csv}") from ve
         except pd.errors.EmptyDataError:
              logger.warning(f"{filelist_csv} is empty. No documents to load.")
-             return data
+             # Cache empty result
+             project_data = {"system_prompt": system_prompt, "documents": []}
+             IN_MEMORY_DOC_CACHE[project_name] = project_data
+             save_to_disk_cache(project_name, {})
+             return project_data
+        except ImportError:
+             logger.error("Pandas library not found. Please install it in the backend virtual environment (`pip install pandas`) to read filelist.csv.")
+             raise HTTPException(status_code=500, detail="Pandas library not installed in backend environment.")
         except Exception as e:
              logger.error(f"Error reading {filelist_csv}: {e}")
-             raise
+             raise # Re-raise to be caught by the outer try-except
 
-        parsed_docs = []
-        filenames_to_parse = df["file_name"].dropna().unique().tolist() # Changed "file name" to "file_name"
+        filenames_to_parse = df["file_name"].dropna().unique().tolist()
         logger.info(f"Found {len(filenames_to_parse)} unique filenames to parse in {filelist_csv.name}.")
 
         for filename in filenames_to_parse:
-            logger.debug(f"Processing filename from CSV: '{filename}'") # Added log
+            logger.debug(f"Processing filename from CSV: '{filename}'")
             file_path = (project_path / filename).resolve()
-            logger.debug(f"Resolved path: {file_path}") # Added log
+            logger.debug(f"Resolved path: {file_path}")
 
-            if project_path not in file_path.parents:
+            doc_content: Optional[DocumentContent] = None
+            parsing_error_msg: Optional[str] = None
+            parsed_text: Optional[str] = None
+            mod_time: Optional[float] = None
+
+            if project_path.resolve() not in file_path.resolve().parents:
                 logger.warning(f"Skipping file outside project directory: {filename}")
-                parsed_docs.append(DocumentContent(filename=filename, content="", error="Access Denied: File is outside project scope."))
-                continue
-
-            if not file_path.is_file():
-                logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}") # Enhanced log
-                parsed_docs.append(DocumentContent(filename=filename, content="", error="File not found."))
-                continue
-
-            suffix = file_path.suffix.lower()
-            logger.debug(f"File suffix: '{suffix}' for {filename}") # Added log
-            doc_content = None
-            if suffix == ".pdf":
-                logger.debug(f"Calling parse_pdf for {filename}") # Added log
-                doc_content = parse_pdf(file_path)
-            elif suffix == ".docx":
-                logger.debug(f"Calling parse_docx for {filename}") # Added log
-                doc_content = parse_docx(file_path)
-            elif suffix == ".md":
-                logger.debug(f"Calling parse_markdown for {filename}") # Added log
-                doc_content = parse_markdown(file_path)
-            elif suffix == ".csv":
-                 if file_path.name != filelist_csv.name:
-                     logger.debug(f"Calling parse_csv for {filename}") # Added log
-                     doc_content = parse_csv(file_path)
-                 else:
-                      logger.info(f"Skipping parsing of the filelist CSV itself: {filename}") # Kept info level
-                      doc_content = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", error=None)
+                parsing_error_msg = "Access Denied: File is outside project scope."
+                mod_time = None # Cannot get mod time if outside scope
+            elif not file_path.is_file():
+                logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}")
+                parsing_error_msg = "File not found."
+                mod_time = None # File doesn't exist
             else:
-                logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
-                doc_content = DocumentContent(filename=filename, content="", error=f"Unsupported file type: {suffix}")
+                mod_time = get_modification_time(file_path)
+                if mod_time is None:
+                     parsing_error_msg = "File inaccessible or error getting modification time."
+                else:
+                    # --- Actual Parsing ---
+                    suffix = file_path.suffix.lower()
+                    logger.debug(f"File suffix: '{suffix}' for {filename}")
+                    try:
+                        if suffix == ".pdf": doc_content = parse_pdf(file_path)
+                        elif suffix == ".docx": doc_content = parse_docx(file_path)
+                        elif suffix == ".md": doc_content = parse_markdown(file_path)
+                        elif suffix == ".csv" and file_path.name != filelist_csv.name:
+                             doc_content = parse_csv(file_path)
+                        elif file_path.name == filelist_csv.name:
+                             logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
+                             doc_content = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", error=None)
+                        else:
+                            logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
+                            doc_content = DocumentContent(filename=filename, content=None, error=f"Unsupported file type: {suffix}")
 
-            if doc_content:
-                logger.debug(f"Appending parsed content for {filename}. Error: {doc_content.error}") # Added log
-                parsed_docs.append(doc_content)
-            else:
-                # This case should ideally not happen if all branches create a DocumentContent object
-                logger.warning(f"No DocumentContent object created for {filename} after parsing attempt.") # Added log
+                        if doc_content:
+                             parsed_text = doc_content.content
+                             parsing_error_msg = doc_content.error
+                             if parsing_error_msg:
+                                  logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
+                             else:
+                                  logger.info(f" -> Successfully parsed {filename}.")
+                        else:
+                             # Should not happen
+                             logger.error(f" -> Failed to get DocumentContent object for {filename}. Storing error.")
+                             parsing_error_msg = "Unknown parsing failure."
 
-        data["documents"] = parsed_docs
+                    except Exception as e:
+                         logger.error(f" -> Unexpected error parsing file {filename}: {e}", exc_info=True)
+                         parsing_error_msg = f"Unexpected error: {e}"
+                         parsed_text = None # Ensure content is None on error
+
+            # --- Store results for both return value and disk cache payload ---
+            parsed_docs_list.append(DocumentContent(
+                filename=filename,
+                content=parsed_text,
+                error=parsing_error_msg
+            ))
+            disk_cache_payload[filename] = {
+                "parsed_content": parsed_text,
+                "source_mod_time": mod_time,
+                "parsing_error": parsing_error_msg
+            }
+
+        # --- Save to Disk Cache and In-Memory Cache ---
+        save_to_disk_cache(project_name, disk_cache_payload)
+        project_data = {"system_prompt": system_prompt, "documents": parsed_docs_list}
+        IN_MEMORY_DOC_CACHE[project_name] = project_data
+        return project_data
 
     except FileNotFoundError as fnf:
+         # This might happen if filelist.csv is missing 'file_name' column
          logger.error(f"Project loading failed for {project_name}: {fnf}")
+         # Return empty data but don't cache this failure state? Or cache it?
+         # Let's return empty but not cache, forcing re-parse next time.
+         return {"system_prompt": system_prompt, "documents": []}
+    # Removed ImportError catch here as it's handled within the inner try
     except Exception as e:
         logger.error(f"Unexpected error loading project {project_name}: {e}\n{traceback.format_exc()}")
+        # Return empty data but don't cache
+        return {"system_prompt": system_prompt, "documents": []}
 
-    return data
+# --- Token Counting Utility ---
+# Cache encodings to avoid re-fetching them repeatedly
+_encodings_cache = {}
 
 # --- Token Counting Utility ---
 # Cache encodings to avoid re-fetching them repeatedly
