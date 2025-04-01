@@ -1,38 +1,129 @@
-# Python
+# --- Python ---
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
 .Python
-env/
-venv/
-ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+# Usually these files are written by a python script from a template
+# before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
 .tox/
+.nox/
 .coverage
 .coverage.*
 .cache
 nosetests.xml
 coverage.xml
-*.egg-info/
-.installed.cfg
-*.egg
-instance/
-*.sqlite3
-*.db
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
 
-# Secrets / Environment Variables
+# Environments
 .env
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static analysis results
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# IPython Notebook checkpoints
+.ipynb_checkpoints
+
+# --- Secrets / Environment Variables ---
+# Ignore all .env files by default
 *.env
+# BUT explicitly track the template file for the backend
+!backend/template.env
+# Other common secret file patterns
 secrets/
 *.pem
 *.key
 
-# Frontend (Node)
+# --- Project Specific Data (Sensitive or Large) ---
+# Ignore common document types within the 'projects' directory
+# Adjust these patterns based on actual project needs
+projects/**/*.pdf
+projects/**/*.docx
+projects/**/*.csv
+projects/**/*.txt
+
+# --- Project Specific Metadata (Keep Tracked) ---
+# Ensure essential project configuration files ARE tracked
+# Example: !projects/**/metadata.json
+!projects/**/system_prompt.txt
+!projects/**/filelist.csv
+
+# --- Template Directory Specific Rules ---
+# Ensure the template directory itself and its essential files are tracked
+!projects/_template/             # Un-ignore the directory itself
+projects/_template/*             # Ignore everything inside by default
+!projects/_template/system_prompt.txt # Re-include this file
+!projects/_template/filelist.csv    # Re-include this file
+
+# --- Frontend (Node.js - if applicable) ---
+# Common Node.js patterns
 node_modules/
-dist/
-build/
+# dist/ # Already covered by Python section
+# build/ # Already covered by Python section
 .npm
 npm-debug.log*
 yarn-debug.log*
@@ -40,34 +131,29 @@ yarn-error.log*
 .pnp/
 .pnp.js
 
-# IDE / Editor specific
+# --- IDE / Editor Settings ---
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
-# OS specific
+# --- OS Specific Files ---
 .DS_Store
 Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Development Helper Files ---
+# File used by manage_dev_apps.sh to store PIDs
 .dev_pids
 
-# Logs
-*.log
-
-# Project Specific Documents (Sensitive or Large)
-# Might adjust later, but good starting point
-projects/**/*.pdf
-projects/**/*.docx
-projects/**/*.csv
-projects/**/*.txt
-# Keep project metadata files tracked
-# !projects/**/metadata.json
-# !projects/**/system_prompt.txt
-
-# Track specific files in the template directory
-!projects/_template/             # Un-ignore the directory itself
-projects/_template/*             # Ignore everything inside by default
-!projects/_template/system_prompt.txt # Re-include this file
-!projects/_template/filelist.csv    # Re-include this file
-
+# --- Aider (AI Coding Assistant) ---
 .aider*
+
+# --- Instance Folders (e.g., Flask) ---
+instance/
+*.sqlite3
+*.db
