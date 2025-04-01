@@ -23,6 +23,39 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- Inject CSS for Fixed Chat Input ---
+st.markdown("""
+<style>
+    /* Target the Streamlit chat input container */
+    div[data-testid="stChatInput"] {
+        position: fixed;
+        bottom: 0;
+        left: 0; /* Start from left edge */
+        width: 100%; /* Full viewport width initially */
+        background-color: white; /* Use Streamlit's theme background potentially */
+        padding: 0.5rem 1rem; /* Adjust padding as needed */
+        border-top: 1px solid #ddd; /* Add a subtle top border */
+        z-index: 1000; /* Ensure it's above other elements */
+        box-sizing: border-box; /* Include padding in width calculation */
+    }
+
+    /* Adjust left position and width on wider screens to account for the sidebar */
+    /* Assumes sidebar width is around 330px. Adjust breakpoint/width if needed. */
+    @media (min-width: 768px) {
+        div[data-testid="stChatInput"] {
+            left: 330px;
+            width: calc(100% - 330px);
+        }
+    }
+
+    /* Add padding to the bottom of the main content area to prevent overlap */
+    /* Targets the main block container */
+    section.main > div.block-container {
+        padding-bottom: 80px; /* Adjust based on the input bar's final height */
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Configure logging - Keep at INFO level to avoid file watcher loop with DEBUG
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
