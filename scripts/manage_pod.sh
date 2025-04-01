@@ -128,7 +128,7 @@ start_all() {
         log "Creating backend container '$BACKEND_CONTAINER_NAME' in pod '$POD_NAME'..."
         if ! $PODMAN run --detach --pod "$POD_NAME" --name "$BACKEND_CONTAINER_NAME" \
                    --volume "$ENV_FILE:/app/.env:ro,Z" \
-                   --volume "$PROJECTS_DIR:/app/../projects:ro,Z" \
+                   --volume "$PROJECTS_DIR:/app/../projects:Z" \
                    "$BACKEND_IMAGE"; then
             log_error "Failed to create backend container '$BACKEND_CONTAINER_NAME'."
             # Attempt to check pod logs maybe?

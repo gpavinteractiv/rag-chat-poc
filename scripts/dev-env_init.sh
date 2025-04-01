@@ -21,6 +21,7 @@ readonly PROJECT_ROOT=$( cd -- "$(dirname "$SCRIPT_DIR")" &> /dev/null && pwd )
 
 readonly BACKEND_DIR="$PROJECT_ROOT/backend"
 readonly FRONTEND_DIR="$PROJECT_ROOT/frontend"
+readonly PROJECTS_DIR="$PROJECT_ROOT/projects"
 readonly BACKEND_VENV_DIR="$BACKEND_DIR/venv"
 readonly FRONTEND_VENV_DIR="$FRONTEND_DIR/venv_streamlit"
 readonly BACKEND_REQ_FILE="$BACKEND_DIR/requirements.txt"
@@ -111,6 +112,15 @@ else
     log "models.txt file found."
 fi
 
+# Set permissions on projects directory for container compatibility
+log "Checking projects directory permissions for container compatibility..."
+if [ -d "$PROJECTS_DIR" ]; then
+    log "Setting write permissions on projects directory for container users..."
+    chmod -R o+w "$PROJECTS_DIR"
+    log_success "Projects directory permissions updated for container compatibility."
+else
+    log_warn "Projects directory not found at: $PROJECTS_DIR. Skipping permissions update."
+fi
 
 # 3. Create Backend Virtual Environment and Install Dependencies
 log "Checking backend virtual environment: $BACKEND_VENV_DIR"

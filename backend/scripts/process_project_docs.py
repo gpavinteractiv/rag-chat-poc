@@ -205,7 +205,7 @@ def count_tokens(text: str) -> int:
 # --- Main Processing Logic ---
 def process_project(
     project_dir: Path, 
-    cache_base_dir: Path,
+    cache_base_dir: Path,  # This parameter is retained for backward compatibility
     projects_base_dir: Path,
     token_counts_only: bool = False,
     cache_only: bool = False,
@@ -217,7 +217,7 @@ def process_project(
     
     Args:
         project_dir: Path to the project directory
-        cache_base_dir: Path to the cache directory
+        cache_base_dir: Path to the cache directory (deprecated - cache now stored in project dir)
         projects_base_dir: Path to the base projects directory
         token_counts_only: If True, only update token counts in filelist.csv (no cache)
         cache_only: If True, only generate disk cache (no CSV update)
@@ -237,7 +237,13 @@ def process_project(
         return
 
     filelist_path = project_dir / FILELIST_NAME
-    cache_file_path = cache_base_dir / f"{project_name}.json"
+    
+    # Create .cache directory in the project directory
+    project_cache_dir = project_dir / ".cache"
+    project_cache_dir.mkdir(exist_ok=True, parents=True)
+    cache_file_path = project_cache_dir / "docs.json"
+    
+    logger.info(f"Using project-local cache at: {cache_file_path}")
     
     # If force_regenerate is True, delete existing cache file
     if force_regenerate and cache_file_path.exists() and not token_counts_only:

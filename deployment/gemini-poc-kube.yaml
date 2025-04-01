@@ -29,7 +29,6 @@ spec:
       readOnly: true
     - mountPath: /app/../projects
       name: mnt-lab-rag-chat-poc-projects-host-1
-      readOnly: true
   - image: localhost/rag-chat-frontend:0.1
     name: rag-frontend-container
     securityContext: {}
@@ -42,4 +41,3 @@ spec:
       path: /mnt/LAB/rag-chat-poc/projects
       type: Directory
     name: mnt-lab-rag-chat-poc-projects-host-1
-

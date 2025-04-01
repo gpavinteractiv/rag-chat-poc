@@ -106,6 +106,10 @@ projects/**/*.docx
 projects/**/*.csv
 projects/**/*.txt
 
+# --- Cache Directories ---
+# Ignore project-level cache directories (now that cache is stored in each project)
+projects/**/.cache/
+
 # --- Project Specific Metadata (Keep Tracked) ---
 # Ensure essential project configuration files ARE tracked
 # Example: !projects/**/metadata.json

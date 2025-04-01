@@ -26,7 +26,6 @@ spec:
     volumeMounts:
     - mountPath: /app/../projects
       name: mnt-lab-rag-chat-poc-projects-host-0
-      readOnly: true
     - mountPath: /app/.env
       name: mnt-lab-rag-chat-poc-backend-.env-host-1
       readOnly: true
@@ -42,4 +41,3 @@ spec:
       path: /mnt/LAB/rag-chat-poc/backend/.env
       type: File
     name: mnt-lab-rag-chat-poc-backend-.env-host-1
-
