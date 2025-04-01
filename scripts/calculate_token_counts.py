@@ -1,5 +1,3 @@
-source backend/venv/bin/activate
-
 import argparse
 import logging
 from pathlib import Path
