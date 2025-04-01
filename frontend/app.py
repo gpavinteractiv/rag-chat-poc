@@ -4,6 +4,7 @@ import streamlit as st
 import httpx # For making API calls to the backend
 import logging
 import os
+import time # For sleep during processing checks
 from typing import List, Dict, Optional, Tuple, TypedDict # Added TypedDict
 
 # --- Configuration ---
@@ -182,9 +183,19 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
     except httpx.HTTPStatusError as e:
         response_json = e.response.json() if e.response else {}
         detail = response_json.get("detail", e.response.text)
-        logger.error(f"HTTP error calling chat API ({e.response.status_code}): {detail}", exc_info=True)
-        st.error(f"API Error ({e.response.status_code}): {detail}")
-        return None
+        
+        # Check if this is our special "processing" status
+        if e.response.status_code == 503 and e.response.headers.get("X-Status") == "processing":
+            logger.info(f"Project '{project_name}' is being processed. Setting processing state.")
+            # Set project_processing flag in session state to lock the UI
+            st.session_state.processing_docs = True
+            st.session_state.processing_project_name = project_name
+            # The UI will be updated in the main app loop
+            return None
+        else:
+            logger.error(f"HTTP error calling chat API ({e.response.status_code}): {detail}", exc_info=True)
+            st.error(f"API Error ({e.response.status_code}): {detail}")
+            return None
     except httpx.RequestError as e:
         logger.error(f"Network error calling chat API: {e}", exc_info=True)
         st.error(f"Network Error: Failed to connect to chat API ({api_url}). Details: {e}")
@@ -474,7 +485,6 @@ if st.session_state.get("show_dev_bar", False):
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Backend API: {BACKEND_URL}/docs")
 
-
 # --- Main App Layout (with potential Dev Bar) ---
 main_col, dev_bar_col = st.columns([0.7, 0.3])
 
@@ -484,6 +494,75 @@ with main_col:
 
     # --- Chat Interface Area ---
     st.header(f"Chat with Project: {selected_project if selected_project else 'N/A'}")
+
+    # --- Initialize auto-refresh counter in session state if needed ---
+    if "auto_refresh_count" not in st.session_state:
+        st.session_state.auto_refresh_count = 0
+    
+    # --- Check if project is being processed in the background ---
+    is_processing_selected_project = (st.session_state.get("processing_docs", False) and 
+                                     st.session_state.get("processing_project_name") == selected_project)
+    
+    # --- Project Processing UI Lock with Spinning Wheel ---
+    # If project is processing, use a spinner to completely lock the UI
+    if is_processing_selected_project:
+        # Create a full-height container for the lock screen
+        lock_container = st.container()
+        
+        with lock_container:
+            # Add some space to center the spinner vertically
+            st.markdown("<br><br><br>", unsafe_allow_html=True)
+            
+            # Center the spinner and message
+            cols = st.columns([2, 3, 2])
+            with cols[1]:
+                # Use a spinner with a clear message
+                with st.spinner(f"⏳ Project '{selected_project}' is being processed..."):
+                    st.info("Please wait while document cache is being generated")
+                    st.markdown("<div style='text-align: center; font-size: 0.9em; color: #888;'>"
+                                "The chat interface will be available when the project is ready"
+                                "</div>", unsafe_allow_html=True)
+                    
+                    # Display a progress counter to show activity
+                    st.session_state.auto_refresh_count += 1
+                    st.caption(f"Check #{st.session_state.auto_refresh_count}...")
+            
+            # Simple check to see if the project is still being processed
+            try:
+                # Check if the project is still being processed
+                with httpx.Client(timeout=5.0) as client:
+                    api_url = f"{CHAT_ENDPOINT}/{selected_project}"
+                    test_payload = {
+                        "query": "test", 
+                        "provider": selected_provider if selected_provider else "google", # Fallback 
+                        "model_name": selected_model if selected_model else "gemini-1.0-pro", # Fallback
+                        "max_context_tokens": 10000  # Use minimal tokens for test
+                    }
+                    response = client.post(api_url, json=test_payload)
+                    # If we get here with no exception, the project is ready
+                    # Clear processing state
+                    st.session_state.processing_docs = False
+                    if "processing_project_name" in st.session_state:
+                        del st.session_state.processing_project_name
+                    # Display a confirmation notification
+                    st.success(f"✅ Project '{selected_project}' is ready! You can now start chatting.")
+                    # Force a refresh to ensure UI is updated
+                    time.sleep(1)  # Short delay to allow notification to be seen
+                    st.rerun()
+            except httpx.HTTPStatusError as e:
+                # If still processing, we'll get a 503 with X-Status: processing
+                if e.response.status_code == 503 and e.response.headers.get("X-Status") == "processing":
+                    # Hide all UI elements below by creating an artificial delay
+                    # This effectively locks the UI while the spinner is showing
+                    time.sleep(2)  # Delay to slow down refresh and show the spinner longer
+                    st.rerun()  # Force a rerun to check again
+                else:
+                    # Some other error occurred
+                    logger.error(f"Error checking project status: {e}")
+                    st.error(f"Error checking project status: {e}")
+            except Exception as e:
+                logger.error(f"Error checking if project is ready: {e}")
+                st.error(f"Error checking project status: {str(e)}")
 
     if selected_project and selected_provider and selected_model:
         st.info(f"Using Model: **{selected_provider} / {selected_model}**")
@@ -516,11 +595,16 @@ with main_col:
                 if message["role"] == "assistant" and "model_used" in message:
                      st.caption(f"Model: {message['model_used']}")
 
-        # Disable chat input if processing is ongoing
+        # Disable chat input if processing is ongoing and add visual cue
         chat_input_disabled = st.session_state.get("processing_docs", False)
-        chat_placeholder = "Processing documents..." if chat_input_disabled else f"Ask '{selected_project}' using {selected_model}..."
+        chat_placeholder = "⏳ Processing documents..." if chat_input_disabled else f"Ask '{selected_project}' using {selected_model}..."
 
-        if prompt := st.chat_input(chat_placeholder, key="chat_input_box", disabled=chat_input_disabled):
+        # Only show the chat UI if not in processing state
+        if is_processing_selected_project:
+            # Hide the chat interface completely during processing
+            # This is intentionally left empty to ensure no UI elements interfere with the spinner
+            pass
+        elif prompt := st.chat_input(chat_placeholder, key="chat_input_box", disabled=chat_input_disabled):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)

@@ -49,9 +49,10 @@ if not PROJECTS_DIR.is_dir():
 
 # --- Cache Configuration ---
 BACKEND_DIR = Path(__file__).parent
-CACHE_DIR = BACKEND_DIR / ".cache" / "parsed_docs"
+# Cache will now be stored in each project's directory
 CACHE_VERSION = 1
 IN_MEMORY_DOC_CACHE = {} # Simple dictionary for in-memory cache
+PROCESSING_PROJECTS = {} # Track which projects are currently being processed
 
 # --- API Key Retrieval ---
 google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -234,8 +235,18 @@ class ModelDetailsResponse(BaseModel):
 # --- Cache Helper Functions ---
 
 def get_cache_file_path(project_name: str) -> Path:
-    """Constructs the path to the project's disk cache file."""
-    return CACHE_DIR / f"{project_name}.json"
+    """Constructs the path to the project's disk cache file.
+    Cache is now stored inside each project directory for better portability."""
+    # Get the project path
+    project_path = get_project_path(project_name)
+    if not project_path:
+        # Fallback to old location if project path not found (shouldn't happen in normal operation)
+        logger.warning(f"Project path not found for '{project_name}' when getting cache file path. Using fallback.")
+        return BACKEND_DIR / ".cache" / "parsed_docs" / f"{project_name}.json"
+    
+    # Create a .cache directory within the project directory
+    cache_path = project_path / ".cache"
+    return cache_path / "docs.json"
 
 def get_modification_time(file_path: Path) -> Optional[float]:
     """Gets the last modification time of a file."""
@@ -485,6 +496,95 @@ app = FastAPI(
 )
 logger.info("FastAPI app instance created.")
 
+# --- Background Task Processing ---
+from fastapi.concurrency import run_in_threadpool
+import asyncio
+
+async def process_project_in_background(project_name: str):
+    """Process a project's cache in the background"""
+    try:
+        # Set a flag in the global dict to indicate this project is being processed
+        PROCESSING_PROJECTS[project_name] = True
+        logger.info(f"Starting background cache generation for project: {project_name}")
+        
+        # Get project path
+        project_path = get_project_path(project_name)
+        if not project_path:
+            logger.error(f"Invalid project path for '{project_name}'")
+            return
+            
+        # Run the script in a thread pool to avoid blocking
+        script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
+        project_dir_abs_path = project_path.resolve()
+        command = ["/bin/sh", str(script_path), str(project_dir_abs_path)]
+        
+        # Run the command in a separate thread
+        result = await run_in_threadpool(
+            lambda: subprocess.run(command, capture_output=True, text=True, check=False)
+        )
+        
+        # Log the result
+        logger.info(f"Background cache generation for '{project_name}' completed. Return code: {result.returncode}")
+        if result.stderr:
+            logger.warning(f"Script stderr:\n{result.stderr}")
+            
+        # Clear in-memory cache to ensure fresh data
+        if project_name in IN_MEMORY_DOC_CACHE:
+            del IN_MEMORY_DOC_CACHE[project_name]
+    
+    except Exception as e:
+        logger.error(f"Error in background processing for '{project_name}': {e}", exc_info=True)
+    
+    finally:
+        # Clear processing flag
+        PROCESSING_PROJECTS[project_name] = False
+        logger.info(f"Background processing flag cleared for project: {project_name}")
+
+@app.on_event("startup")
+async def startup_cache_check():
+    """Check for missing project caches on startup and process them in the background"""
+    logger.info("Checking for missing project caches on startup...")
+    try:
+        # Get all projects
+        projects = []
+        for item in PROJECTS_DIR.iterdir():
+            if item.is_dir() and not item.name.startswith('_'):
+                projects.append(item.name)
+        
+        missing_cache_projects = []
+        
+        # Check each project's cache
+        for project_name in projects:
+            project_path = get_project_path(project_name)
+            if not project_path:
+                continue
+                
+            # Check if cache exists and is valid
+            cache_file_path = get_cache_file_path(project_name)
+            has_valid_cache = False
+            
+            if cache_file_path.is_file():
+                # Check if cache is valid
+                validated_docs = load_from_disk_cache(project_path, cache_file_path)
+                has_valid_cache = validated_docs is not None
+            
+            if not has_valid_cache:
+                missing_cache_projects.append(project_name)
+        
+        # Process projects with missing cache
+        if missing_cache_projects:
+            logger.info(f"Found {len(missing_cache_projects)} projects with missing cache: {missing_cache_projects}")
+            
+            # Process each project in a background task
+            for project_name in missing_cache_projects:
+                # Create a background task for processing
+                asyncio.create_task(process_project_in_background(project_name))
+        else:
+            logger.info("All projects have valid cache.")
+    
+    except Exception as e:
+        logger.error(f"Error during startup cache check: {e}", exc_info=True)
+
 
 # --- API Endpoints ---
 
@@ -631,6 +731,14 @@ async def chat_with_project(
     project_path = get_project_path(project_name)
     if not project_path:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
+        
+    # Check if project is currently being processed
+    if project_name in PROCESSING_PROJECTS and PROCESSING_PROJECTS[project_name]:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Project '{project_name}' is currently being processed. Please try again in a moment.",
+            headers={"X-Status": "processing"}  # Custom header to help frontend identify this specific state
+        )
 
     # 4. Load project data (system prompt + parsed documents from cache ONLY)
     try:
@@ -956,7 +1064,8 @@ async def process_project(
     # Use the absolute path to the project directory
     project_dir_abs_path = project_path.resolve()
 
-    command = ["/bin/sh", str(script_path), str(project_dir_abs_path)]
+    # Add --regenerate flag to force completely fresh processing
+    command = ["/bin/sh", str(script_path), str(project_dir_abs_path), "--regenerate"]
     logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
 
     try:
@@ -995,7 +1104,8 @@ async def process_all_projects():
     logger.info("'/projects/process-all' endpoint accessed.")
 
     script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
-    command = ["/bin/sh", str(script_path), "--all-projects"]
+    # Add --regenerate flag to force completely fresh processing for all projects
+    command = ["/bin/sh", str(script_path), "--all-projects", "--regenerate"]
     logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
 
     try:
