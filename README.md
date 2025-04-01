@@ -56,47 +56,80 @@
     ```
     *(Optional: If you modified requirements.txt after running the init script, use `./scripts/rebuild_poc.sh -u` to sync your venvs before the first build).*
 
-6.  **Calculate Initial Token Counts (Optional, Offline):**
-    This step calculates estimated token counts for documents listed in each project's `filelist.csv` and adds/updates a `token_count` column. This count is used by the backend to manage the context window. Run this script after adding or modifying documents in a project.
-
-    *   **For all projects:**
-        Use the `update_all_token_counts.sh` script. It iterates through all valid project directories.
-        ```bash
-        # Run from the project root directory
-        ./scripts/update_all_token_counts.sh
-        ```
-        *Note: This script activates the backend virtual environment internally using `source`. It may take some time depending on the number and size of your documents.*
-
-    *   **For a single project:**
-        Use the `run_calculate_tokens.sh` wrapper script, providing the path to the specific project directory.
-        ```bash
-        # Example for a project named 'MyProject'
-        # Run from the project root directory
-        # Make executable first: chmod +x scripts/run_calculate_tokens.sh
-        ./scripts/run_calculate_tokens.sh projects/MyProject/
-        ```
-        *Note: This wrapper script directly executes the Python script using the interpreter inside `backend/venv`, so you don't need to activate the environment manually beforehand.*
-
-7.  **Pre-generate Document Cache (Optional, Offline):**
-    To improve the performance of the first chat request for each project, you can pre-generate a disk cache of the parsed document content. The backend will automatically use this cache if it's valid (checking file modification times). If the cache is missing or stale, the backend will parse documents on the fly during the chat request and update the disk cache automatically.
+6.  **Process Project Documents (Optional, Offline):**
+    This unified step handles both token count calculation and document cache generation for each project. It automatically:
+    - Creates `filelist.csv` from template if it doesn't exist
+    - Calculates token counts for documents and updates the `token_count` column
+    - Generates a disk cache of parsed document content for faster loading
+    - Preserves the exact column structure of the template
 
     First, make the wrapper script executable:
     ```bash
-    chmod +x scripts/run_pregenerate_cache.sh
+    chmod +x scripts/run_process_docs.sh
     ```
 
-    *   **For all projects:**
-        ```bash
-        # Run from the project root directory
-        ./scripts/run_pregenerate_cache.sh
-        ```
+    **Usage Options:**
+
     *   **For a single project:**
         ```bash
         # Example for a project named 'MyProject'
         # Run from the project root directory
-        ./scripts/run_pregenerate_cache.sh --project-directory projects/MyProject/
+        ./scripts/run_process_docs.sh projects/MyProject/
         ```
-    *Note: This script uses the backend virtual environment via the wrapper. The cache is stored in `backend/.cache/parsed_docs/` and is ignored by Git.*
+
+    *   **For all projects:**
+        ```bash
+        # Process all projects in the projects directory
+        ./scripts/run_process_docs.sh --all-projects
+        ```
+
+    *   **Only calculate token counts:**
+        ```bash
+        # Only update token counts without regenerating cache
+        ./scripts/run_process_docs.sh projects/MyProject/ --token-counts-only
+        ```
+
+    *   **Only generate cache:**
+        ```bash
+        # Only update the document cache without modifying filelist.csv
+        ./scripts/run_process_docs.sh projects/MyProject/ --cache-only
+        ```
+        
+    *   **Force regeneration:**
+        ```bash
+        # Force complete regeneration of both filelist.csv and cache
+        ./scripts/run_process_docs.sh projects/MyProject/ --regenerate
+        ```
+
+    *   **Use parallel processing:**
+        ```bash
+        # Use parallel processing for document parsing (faster but less reliable for some PDFs)
+        ./scripts/run_process_docs.sh projects/MyProject/ --parallel
+        ```
+
+    *Note: This unified script replaces the older separate scripts (`run_calculate_tokens.sh` and `run_pregenerate_cache.sh`). The cache is stored in `backend/.cache/parsed_docs/` and is ignored by Git.*
+
+    **Document Processing Flow:**
+    
+    ```mermaid
+    flowchart TD
+        A[Start] --> B{filelist.csv exists?}
+        B -->|No| C[Create from _template]
+        B -->|Yes| D{--regenerate flag?}
+        C --> E[Find project files]
+        D -->|Yes| F[Backup existing filelist.csv]
+        D -->|No| G{Mode selection}
+        F --> E
+        E --> H[Process documents]
+        G -->|Default| H
+        G -->|--token-counts-only| I[Update token counts only]
+        G -->|--cache-only| J[Update cache only]
+        H --> K[Calculate token counts]
+        K --> L[Generate document cache]
+        I --> K
+        J --> L
+        L --> M[End]
+    ```
 
 8.  **Setup Systemd Service (Optional but Recommended):**
     *   Copy the example service file to your systemd user directory:
@@ -230,7 +263,7 @@ The `rebuild_poc.sh` script handles stopping the application, cleaning up old co
 The backend constructs the prompt context sent to the LLM based on the selected project's documents and the user's query.
 
 *   **Token Limit:** The maximum number of tokens allowed in the context can be adjusted in the frontend sidebar ("Max Context Tokens"). The default is 900,000 tokens, suitable for models like Gemini 2.5 Pro.
-*   **Pre-calculated Counts:** The backend uses pre-calculated token counts for each document (stored in `projects/<project_name>/filelist.csv` under the `token_count` column, generated by `scripts/calculate_token_counts.py`).
+*   **Pre-calculated Counts:** The backend uses pre-calculated token counts for each document (stored in `projects/<project_name>/filelist.csv` under the `token_count` column, generated by the unified `scripts/process_project_docs.py` script via the `run_process_docs.sh` wrapper).
 *   **Document Inclusion:** Documents are included in the context sequentially based on their order in `filelist.csv`.
 *   **Skipping Documents:** If adding the next document (based on its pre-calculated token count) would exceed the configured "Max Context Tokens" limit, that document **and all subsequent documents** are skipped. They will not be included in the context sent to the LLM.
 *   **Warning:** If any documents are skipped due to the token limit, a warning message will appear in the frontend UI listing the skipped files.
