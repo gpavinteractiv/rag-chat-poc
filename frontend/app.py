@@ -158,8 +158,6 @@ def call_chat_api(project_name: str, query: str, provider: str, model_name: str)
 
       
 # --- Main App UI ---
-st.title("📄🤖 RAG Chat PoC")
-st.caption(f"A proof-of-concept chat agent using Gemini via a FastAPI backend ({BACKEND_URL}).")
 
 
 # --- Project Selection ---
