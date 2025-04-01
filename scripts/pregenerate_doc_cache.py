@@ -14,6 +14,7 @@ import json
 import os
 import time
 import traceback
+from typing import Optional
 
 # --- Add backend directory to sys.path ---
 # This assumes the script is run from the project root or via a wrapper in scripts/
