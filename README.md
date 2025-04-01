@@ -57,15 +57,46 @@
     ```
     *(Optional: If you modified requirements.txt after running the init script, use `./scripts/rebuild_poc.sh -u` to sync your venvs before the first build).*
 
-6.  **Calculate Initial Token Counts (Offline):**
-    After setting up your projects and adding documents to `filelist.csv`, run the token calculation script. This script parses each document listed in the `filelist.csv` for *all* projects and adds/updates a `token_count` column in each CSV file. This count is currently informational and used in the UI's Dev Bar.
-    ```bash
-    # Run from the project root directory
-    ./scripts/update_all_token_counts.sh
-    ```
-    *Note: This script needs the backend virtual environment activated, which it handles internally. It may take some time depending on the number and size of your documents.*
+6.  **Calculate Initial Token Counts (Optional, Offline):**
+    This step calculates estimated token counts for documents listed in each project's `filelist.csv` and adds/updates a `token_count` column. This count is currently informational and primarily used in the UI's Dev Bar.
 
-7.  **Setup Systemd Service (Optional but Recommended):**
+    *   **For all projects:**
+        Use the `update_all_token_counts.sh` script. It iterates through all valid project directories.
+        ```bash
+        # Run from the project root directory
+        ./scripts/update_all_token_counts.sh
+        ```
+        *Note: This script activates the backend virtual environment internally using `source`. It may take some time depending on the number and size of your documents.*
+
+    *   **For a single project:**
+        Use the `run_calculate_tokens.sh` wrapper script, providing the path to the specific project directory.
+        ```bash
+        # Example for a project named 'MyProject'
+        # Run from the project root directory
+        # Make executable first: chmod +x scripts/run_calculate_tokens.sh
+        ./scripts/run_calculate_tokens.sh projects/MyProject/
+        ```
+        *Note: This wrapper script directly executes the Python script using the interpreter inside `backend/venv`, so you don't need to activate the environment manually beforehand.*
+
+7.  **Pre-generate Document Cache (Optional, Offline):**
+    To improve the performance of the first chat request for each project, you can pre-generate a disk cache of the parsed document content. The backend will automatically use this cache if it's valid (checking file modification times). If the cache is missing or stale, the backend will parse documents on the fly during the chat request and update the disk cache.
+
+    *   **For all projects:**
+        ```bash
+        # Run from the project root directory
+        # Make executable first: chmod +x scripts/run_pregenerate_cache.sh
+        ./scripts/run_pregenerate_cache.sh
+        ```
+    *   **For a single project:**
+        ```bash
+        # Example for a project named 'MyProject'
+        # Run from the project root directory
+        # Make executable first: chmod +x scripts/run_pregenerate_cache.sh
+        ./scripts/run_pregenerate_cache.sh --project-directory projects/MyProject/
+        ```
+    *Note: This script uses the backend virtual environment via the wrapper. The cache is stored in `backend/.cache/parsed_docs/` and is ignored by Git.*
+
+8.  **Setup Systemd Service (Optional but Recommended):**
     *   Copy the example service file to your systemd user directory:
         ```bash
         mkdir -p ~/.config/systemd/user/
