@@ -25,10 +25,11 @@ import shutil
 from typing import Optional, Dict, List, Tuple, Set
 
 # --- Add backend directory to sys.path ---
-# This assumes the script is run from the project root or via a wrapper in scripts/
+# This script is now located in backend/scripts/
 try:
-    project_root = Path(__file__).parent.parent.resolve()
-    backend_dir = project_root / "backend"
+    script_dir = Path(__file__).parent.resolve()
+    backend_dir = script_dir.parent.resolve() # backend directory is one level up
+    project_root = backend_dir.parent.resolve() # project root is two levels up
     if str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
     from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
@@ -671,11 +672,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Force regeneration of filelist.csv and cache even if they exist"
     )
-    
+
     args = parser.parse_args()
 
+    # Re-calculate paths based on the script's new location
+    script_dir = Path(__file__).parent.resolve()
+    backend_dir = script_dir.parent.resolve() # backend directory is one level up
+    project_root = backend_dir.parent.resolve() # project root is two levels up
+
     projects_base_dir = project_root / "projects"
-    cache_target_dir = backend_dir / CACHE_DIR_NAME / PARSED_DOCS_SUBDIR
+    cache_target_dir = backend_dir / CACHE_DIR_NAME / PARSED_DOCS_SUBDIR # Cache is relative to backend dir
 
     if not projects_base_dir.is_dir():
         logger.critical(f"Projects base directory not found at {projects_base_dir}. Cannot proceed.")

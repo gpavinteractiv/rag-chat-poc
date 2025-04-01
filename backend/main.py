@@ -7,21 +7,26 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import httpx # Added for OpenRouter REST API calls
 from pydantic import BaseModel, Field # Import Pydantic
-from typing import List, Optional, Dict, Literal
+from typing import List, Optional, Dict, Literal, Tuple
 from pathlib import Path # Use pathlib for path operations
 import pdfplumber # PDF parsing
 from docx import Document as DocxDocument # DOCX parsing (renamed)
 import markdown as md_parser # Markdown parsing
 import pandas as pd # CSV/Excel parsing
 import traceback # For detailed error logging
-import asyncio # For potential async file operations later
+# import asyncio # No longer needed for async file ops here
 import json # For OpenRouter payload and disk cache
 import time # For cache validation
 import os # For file modification times
 import tiktoken # Added for token counting
+# import concurrent.futures # No longer needed for runtime parsing
+# from functools import partial # No longer needed for runtime parsing
 # from cachetools import cached, TTLCache # Not using cachetools for doc cache
 # Import parsing functions using absolute import from backend perspective
-from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
+# These are still needed by the processing script, but not directly by main.py anymore
+# from parsing_utils import parse_pdf, parse_docx, parse_markdown, parse_csv, DocumentContent
+import subprocess # For running the processing script
+from fastapi.responses import JSONResponse # For script execution response
 
 # --- Configuration & Setup ---
 # Set logging level to DEBUG to capture detailed info for pricing issue
@@ -195,7 +200,7 @@ class ChatResponse(BaseModel):
     model_used: str # Added to confirm which model responded
     input_tokens: Optional[int] = None # Added token counts
     output_tokens: Optional[int] = None # Added token counts
-    runtime_parsing_occurred: bool = Field(False, description="Flag indicating whether documents were parsed at runtime rather than loaded from cache.")
+    # runtime_parsing_occurred: bool = Field(False, description="Flag indicating whether documents were parsed at runtime rather than loaded from cache.") # Removed
 
 class DocumentContent(BaseModel):
     filename: str
@@ -224,7 +229,7 @@ class ModelDetailsResponse(BaseModel):
     details: ModelDetails
 
 # --- File Parsing Utilities ---
-# Parsing functions moved to parsing_utils.py
+# Parsing functions moved to parsing_utils.py and are no longer called directly by main.py
 
 # --- Cache Helper Functions ---
 
@@ -330,6 +335,57 @@ def save_to_disk_cache(project_name: str, documents_data: Dict[str, dict]):
     except Exception as e:
         logger.error(f"Error saving disk cache for project '{project_name}': {e}", exc_info=True)
 
+def save_document_to_cache(project_name: str, filename: str, doc_data: dict):
+    """Saves a single document to the cache, creating or updating the cache file."""
+    cache_file_path = get_cache_file_path(project_name)
+    
+    # Create cache directory if it doesn't exist
+    cache_file_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Load existing cache or create new
+    if cache_file_path.exists():
+        try:
+            with open(cache_file_path, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+                
+                # Validate cache format
+                if cache_data.get("cache_version") != CACHE_VERSION or cache_data.get("project_name") != project_name:
+                    logger.warning(f"Existing cache file for {project_name} has incorrect version or project name. Creating new cache.")
+                    cache_data = {
+                        "cache_version": CACHE_VERSION,
+                        "project_name": project_name,
+                        "generation_timestamp": time.time(),
+                        "documents": {}
+                    }
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Existing cache file for {project_name} is corrupted: {e}. Creating new.")
+            cache_data = {
+                "cache_version": CACHE_VERSION,
+                "project_name": project_name,
+                "generation_timestamp": time.time(),
+                "documents": {}
+            }
+    else:
+        # Create new cache
+        cache_data = {
+            "cache_version": CACHE_VERSION,
+            "project_name": project_name,
+            "generation_timestamp": time.time(),
+            "documents": {}
+        }
+    
+    # Update the document in the cache
+    cache_data["documents"][filename] = doc_data
+    cache_data["generation_timestamp"] = time.time()  # Update timestamp
+    
+    # Write updated cache back to file
+    try:
+        with open(cache_file_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+        logger.info(f"Updated cache for '{project_name}' with document: {filename}")
+    except Exception as e:
+        logger.error(f"Error updating cache file for {project_name} with document {filename}: {e}")
+
 
 # --- Project Loading Logic ---
 def get_project_path(project_name: str) -> Optional[Path]:
@@ -375,181 +431,17 @@ def load_project_data(project_path: Path) -> Dict[str, List[DocumentContent] | s
         # Disk cache is valid, store in memory and return
         project_data = {"system_prompt": system_prompt, "documents": validated_docs_from_cache}
         IN_MEMORY_DOC_CACHE[project_name] = project_data
-        return project_data
-
-    # 3. Parse Fresh (Cache miss or invalid)
-    logger.info(f"Parsing documents fresh for project '{project_name}' (cache miss or invalid).")
-    parsed_docs_list: List[DocumentContent] = []
-    disk_cache_payload: Dict[str, dict] = {} # To store data for saving to disk
-
-    filelist_csv = project_path / "filelist.csv"
-    if not filelist_csv.is_file():
-        logger.error(f"filelist.csv not found for project {project_name}. Cannot load documents.")
-        # Still cache this result (empty docs)
-        project_data = {"system_prompt": system_prompt, "documents": []}
-        IN_MEMORY_DOC_CACHE[project_name] = project_data
-        # Don't save an empty disk cache? Or save it to indicate it was checked?
-        # Let's save it to show it was processed.
-        save_to_disk_cache(project_name, {})
-        return project_data
-
-    try:
-        try:
-            # Ensure pandas is imported if needed
-            import pandas as pd
-            # Read both filename and token count columns
-            required_cols = ["file_name", "token_count"]
-            df = pd.read_csv(filelist_csv, usecols=lambda c: c in required_cols, skipinitialspace=True)
-            if not all(col in df.columns for col in required_cols):
-                missing_cols = [col for col in required_cols if col not in df.columns]
-                logger.error(f"Required column(s) {missing_cols} not found in {filelist_csv}. Cannot load documents with token counts.")
-                raise FileNotFoundError(f"Required column(s) missing in {filelist_csv}: {missing_cols}")
-        except ValueError as ve: # Should be caught by the column check above now
-            logger.error(f"Error reading required columns from {filelist_csv}: {ve}")
-            raise FileNotFoundError(f"Required column(s) missing or error reading {filelist_csv}") from ve
-        except pd.errors.EmptyDataError:
-             logger.warning(f"{filelist_csv} is empty. No documents to load.")
-             # Cache empty result
-             project_data = {"system_prompt": system_prompt, "documents": []}
-             IN_MEMORY_DOC_CACHE[project_name] = project_data
-             save_to_disk_cache(project_name, {})
-             return project_data
-        except ImportError:
-             logger.error("Pandas library not found. Please install it in the backend virtual environment (`pip install pandas`) to read filelist.csv.")
-             raise HTTPException(status_code=500, detail="Pandas library not installed in backend environment.")
-        except Exception as e:
-             logger.error(f"Error reading {filelist_csv}: {e}")
-        except Exception as e:
-            logger.error(f"Error reading {filelist_csv}: {e}")
-            raise # Re-raise to be caught by the outer try-except
-
-        # Use dropna on filename subset to avoid dropping rows with valid filename but NA token_count
-        df_valid_filenames = df.dropna(subset=['file_name'])
-        logger.info(f"Found {len(df_valid_filenames)} rows with valid filenames to parse in {filelist_csv.name}.")
-
-        # Iterate through DataFrame rows to access both filename and token count
-        for index, row in df_valid_filenames.iterrows():
-            filename = row["file_name"]
-            # Get precalculated token count, handle NA/errors from CSV read
-            precalculated_token_count = pd.to_numeric(row.get("token_count"), errors='coerce')
-            if pd.isna(precalculated_token_count):
-                precalculated_token_count = None # Store as None if invalid
-                logger.warning(f"Invalid or missing precalculated token count for {filename} in CSV. Will be ignored.")
-            else:
-                precalculated_token_count = int(precalculated_token_count) # Convert to int if valid
-
-            logger.debug(f"Processing file: '{filename}' (Precalculated Tokens: {precalculated_token_count})")
-            file_path = (project_path / filename).resolve()
-            logger.debug(f"Resolved path: {file_path}")
-
-            doc_content_obj: Optional[DocumentContent] = None # Renamed to avoid confusion
-            parsing_error_msg: Optional[str] = None
-            parsed_text: Optional[str] = None
-            mod_time: Optional[float] = None
-
-            if project_path.resolve() not in file_path.resolve().parents:
-                 logger.warning(f"Skipping file outside project directory: {filename}")
-                 parsing_error_msg = "Access Denied: File is outside project scope."
-                 mod_time = None # Cannot get mod time if outside scope
-                 # Create error object directly
-                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
-            elif not file_path.is_file():
-                 logger.warning(f"File listed in CSV not found: {filename} at resolved path {file_path}")
-                 parsing_error_msg = "File not found."
-                 mod_time = None # File doesn't exist
-                 # Create error object directly
-                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
-            else:
-                 mod_time = get_modification_time(file_path)
-                 if mod_time is None:
-                      parsing_error_msg = "File inaccessible or error getting modification time."
-                      # Create error object directly
-                      doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
-                 else:
-                     # --- Actual Parsing ---
-                     suffix = file_path.suffix.lower()
-                     logger.debug(f"File suffix: '{suffix}' for {filename}")
-                     try:
-                         if suffix == ".pdf": doc_content_obj = parse_pdf(file_path)
-                         elif suffix == ".docx": doc_content_obj = parse_docx(file_path)
-                         elif suffix == ".md": doc_content_obj = parse_markdown(file_path)
-                         elif suffix == ".csv" and file_path.name != filelist_csv.name:
-                              doc_content_obj = parse_csv(file_path)
-                         elif file_path.name == filelist_csv.name:
-                               logger.info(f"Skipping parsing of the filelist CSV itself: {filename}")
-                               # Create DocumentContent directly, token count is irrelevant here
-                               doc_content_obj = DocumentContent(filename=filename, content="[Metadata File: List of project documents]", token_count=0, error=None)
-                         else:
-                              logger.warning(f"Unsupported file type listed: {filename} ({suffix})")
-                              doc_content_obj = DocumentContent(filename=filename, content=None, token_count=0, error=f"Unsupported file type: {suffix}")
-
-                         if doc_content_obj:
-                               parsed_text = doc_content_obj.content # Keep track of parsed text
-                               parsing_error_msg = doc_content_obj.error # Keep track of parsing error
-                               # Use the precalculated token count, don't overwrite from parsing result
-                               # (parsing_utils functions don't return token counts anyway)
-                               if parsing_error_msg:
-                                    logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
-                               # Always assign the precalculated token count if it's valid,
-                               # regardless of parsing errors (which are stored separately).
-                               if precalculated_token_count is not None:
-                                   doc_content_obj.token_count = precalculated_token_count
-                                   logger.debug(f" -> Assigned precalculated token count: {precalculated_token_count}")
-                               else:
-                                   # If precalculated count was invalid/missing from CSV, ensure it's None here too.
-                                   doc_content_obj.token_count = None
-                                   logger.warning(f" -> Precalculated token count was invalid/missing for {filename}, setting to None.")
-
-                               # Log parsing success/failure separately
-                               if parsing_error_msg:
-                                    logger.error(f" -> Parsing error for {filename}: {parsing_error_msg}")
-                               else:
-                                    logger.info(f" -> Successfully parsed {filename}.")
-                         else:
-                               # This case handles if the parsing function itself returned None
-                               logger.error(f" -> Parsing function failed to return a DocumentContent object for {filename}. Storing error.")
-                               parsing_error_msg = "Unknown parsing function failure."
-                               doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg) # Create error object
-
-                     except Exception as e:
-                          logger.error(f" -> Unexpected error parsing file {filename}: {e}", exc_info=True)
-                          parsing_error_msg = f"Unexpected error: {e}"
-                          # Create error object directly
-                          doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error=parsing_error_msg)
-
-            # --- Store results for both return value and disk cache payload ---
-            # Ensure doc_content_obj exists before appending/using
-            if doc_content_obj is None:
-                 # This should ideally not happen if all paths create an object, but as a safeguard:
-                 logger.error(f"doc_content_obj is None for {filename} after processing. Creating error object.")
-                 doc_content_obj = DocumentContent(filename=filename, content=None, token_count=None, error="Internal processing error")
-
-            parsed_docs_list.append(doc_content_obj)
-
-            disk_cache_payload[filename] = {
-                 "parsed_content": doc_content_obj.content,
-                 "source_mod_time": mod_time,
-                 "token_count": doc_content_obj.token_count, # Save token count to cache
-                 "parsing_error": doc_content_obj.error
-            }
-
-        # --- Save to Disk Cache and In-Memory Cache ---
-        save_to_disk_cache(project_name, disk_cache_payload)
-        project_data = {"system_prompt": system_prompt, "documents": parsed_docs_list}
+        # Disk cache is valid, store in memory and return
+        project_data = {"system_prompt": system_prompt, "documents": validated_docs_from_cache}
         IN_MEMORY_DOC_CACHE[project_name] = project_data
         return project_data
 
-    except FileNotFoundError as fnf:
-         # This might happen if filelist.csv is missing required columns
-         logger.error(f"Project loading failed for {project_name}: {fnf}")
-         # Return empty data but don't cache this failure state? Or cache it?
-         # Let's return empty but not cache, forcing re-parse next time.
-         return {"system_prompt": system_prompt, "documents": []}
-    # Removed ImportError catch here as it's handled within the inner try
-    except Exception as e:
-        logger.error(f"Unexpected error loading project {project_name}: {e}\n{traceback.format_exc()}")
-        # Return empty data but don't cache
-        return {"system_prompt": system_prompt, "documents": []}
+    # 3. Cache Miss or Invalid - Return empty documents
+    logger.warning(f"No valid cache found for project '{project_name}'. Returning empty document list. Run processing script to generate cache.")
+    project_data = {"system_prompt": system_prompt, "documents": []}
+    # Optionally cache the empty result to avoid repeated disk checks? For now, let's not.
+    # IN_MEMORY_DOC_CACHE[project_name] = project_data
+    return project_data
 
 # --- Token Counting Utility ---
 # Cache encodings to avoid re-fetching them repeatedly
@@ -608,40 +500,7 @@ async def ping():
     logger.info("Ping endpoint '/ping' accessed.")
     return {"status": "ok", "message": "pong"}
 
-@app.get("/check-parsing/{project_name}")
-async def check_if_parsing_needed(project_name: str = FastAPIPath(..., title="The name of the project to check", min_length=1)):
-    """
-    Checks if the specified project will need to be parsed at runtime.
-    Returns true if parsing will be needed (no valid cache exists), false otherwise.
-    """
-    logger.info(f"'/check-parsing/{project_name}' endpoint accessed.")
-    
-    # Validate and get project path
-    project_path = get_project_path(project_name)
-    if not project_path:
-        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
-    
-    # Check if cache exists and is valid
-    cache_file_path = get_cache_file_path(project_name)
-    will_parse_at_runtime = True
-    
-    # If project is already in memory cache, no parsing needed
-    if project_name in IN_MEMORY_DOC_CACHE:
-        logger.info(f"Project '{project_name}' found in memory cache. No parsing needed.")
-        will_parse_at_runtime = False
-    # Otherwise check disk cache
-    elif cache_file_path.is_file():
-        # Try to validate disk cache
-        validated_docs = load_from_disk_cache(project_path, cache_file_path)
-        if validated_docs is not None:
-            logger.info(f"Valid disk cache found for project '{project_name}'. No parsing needed.")
-            will_parse_at_runtime = False
-        else:
-            logger.info(f"Invalid or stale disk cache for project '{project_name}'. Parsing will be needed.")
-    else:
-        logger.info(f"No cache found for project '{project_name}'. Parsing will be needed.")
-    
-    return {"will_parse_at_runtime": will_parse_at_runtime}
+# Removed /check-parsing endpoint
 
 @app.get("/models", response_model=AvailableModelsResponse)
 async def get_available_models():
@@ -773,19 +632,14 @@ async def chat_with_project(
     if not project_path:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
 
-    # 4. Load project data (system prompt + parsed documents)
-    runtime_parsing_occurred = False
-    # First check if the cache file exists - if it doesn't, we'll be parsing at runtime
-    cache_file_path = get_cache_file_path(project_name)
-    if not cache_file_path.is_file():
-        logger.info(f"No cache file found for project '{project_name}'. Documents will be parsed at runtime.")
-        runtime_parsing_occurred = True
-    elif project_name not in IN_MEMORY_DOC_CACHE:
-        logger.info(f"Project '{project_name}' not in memory cache. Will attempt to load from disk cache or parse fresh.")
-        runtime_parsing_occurred = True
-
+    # 4. Load project data (system prompt + parsed documents from cache ONLY)
     try:
         project_data = load_project_data(project_path)
+        # Check if documents were loaded (i.e., cache was valid)
+        if not project_data.get("documents"):
+            logger.warning(f"No documents loaded for project '{project_name}'. Cache might be missing or invalid. Chatting without document context.")
+            # Optionally raise an error or return a specific message if context is crucial
+            # raise HTTPException(status_code=404, detail=f"Document cache for project '{project_name}' not found. Please process the project first.")
     except Exception as e:
         logger.error(f"Failed to load data for project {project_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load project data: {e}")
@@ -945,8 +799,8 @@ async def chat_with_project(
             skipped_sources=skipped_sources, # Return list of skipped sources
             model_used=f"{request.provider}/{request.model_name}", # Include provider in response
             input_tokens=final_input_token_count, # Use final calculated input tokens
-            output_tokens=output_token_count,
-            runtime_parsing_occurred=runtime_parsing_occurred # Add flag indicating if parsing happened at runtime
+            output_tokens=output_token_count
+            # runtime_parsing_occurred removed
         )
 
     except httpx.HTTPStatusError as hse:
@@ -1082,6 +936,95 @@ async def get_model_details(
     except Exception as e:
         logger.error(f"Unexpected error fetching model details for {provider}/{model_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error fetching model details: {e}")
+
+
+# --- Script Execution Endpoints ---
+
+@app.post("/projects/{project_name}/process")
+async def process_project(
+    project_name: str = FastAPIPath(..., title="The name of the project to process", min_length=1)
+):
+    """Triggers the document processing script for a specific project."""
+    logger.info(f"'/projects/{project_name}/process' endpoint accessed.")
+
+    # Validate project exists (optional but good practice)
+    project_path = get_project_path(project_name)
+    if not project_path:
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found or invalid.")
+
+    script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
+    # Use the absolute path to the project directory
+    project_dir_abs_path = project_path.resolve()
+
+    command = ["/bin/sh", str(script_path), str(project_dir_abs_path)]
+    logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
+
+    try:
+        # Run synchronously
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600) # 10 min timeout
+
+        logger.info(f"Script execution finished for {project_name}. Return code: {result.returncode}")
+        logger.debug(f"Script stdout:\n{result.stdout}")
+        if result.stderr:
+            logger.warning(f"Script stderr:\n{result.stderr}")
+
+        # Clear in-memory cache for this project after processing
+        if project_name in IN_MEMORY_DOC_CACHE:
+            del IN_MEMORY_DOC_CACHE[project_name]
+            logger.info(f"Cleared in-memory cache for project '{project_name}' after processing.")
+
+        return JSONResponse(content={
+            "success": result.returncode == 0,
+            "message": f"Processing script for '{project_name}' finished.",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "return_code": result.returncode
+        })
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout expired while running processing script for {project_name}.")
+        raise HTTPException(status_code=504, detail=f"Processing script for '{project_name}' timed out.")
+    except Exception as e:
+        logger.error(f"Error executing processing script for {project_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error executing processing script: {e}")
+
+
+@app.post("/projects/process-all")
+async def process_all_projects():
+    """Triggers the document processing script for all projects."""
+    logger.info("'/projects/process-all' endpoint accessed.")
+
+    script_path = (Path(__file__).parent / "scripts" / "run_process_docs.sh").resolve()
+    command = ["/bin/sh", str(script_path), "--all-projects"]
+    logger.info(f"Executing command: {' '.join(map(str, command))}") # Ensure all parts are strings for join
+
+    try:
+        # Run synchronously - might take a long time! Increase timeout significantly.
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=1800) # 30 min timeout
+
+        logger.info(f"Script execution finished for all projects. Return code: {result.returncode}")
+        logger.debug(f"Script stdout:\n{result.stdout}")
+        if result.stderr:
+            logger.warning(f"Script stderr:\n{result.stderr}")
+
+        # Clear entire in-memory cache after processing all
+        IN_MEMORY_DOC_CACHE.clear()
+        logger.info("Cleared entire in-memory cache after processing all projects.")
+
+        return JSONResponse(content={
+            "success": result.returncode == 0,
+            "message": "Processing script for all projects finished.",
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "return_code": result.returncode
+        })
+
+    except subprocess.TimeoutExpired:
+        logger.error("Timeout expired while running processing script for all projects.")
+        raise HTTPException(status_code=504, detail="Processing script for all projects timed out.")
+    except Exception as e:
+        logger.error(f"Error executing processing script for all projects: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error executing processing script for all projects: {e}")
 
 
 # --- Uvicorn runner ---

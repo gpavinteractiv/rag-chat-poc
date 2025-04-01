@@ -11,10 +11,10 @@ set -e
 # Find the directory where this script is located.
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-# Construct the absolute path to the project root (one level up from scripts)
-PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# Construct the absolute path to the project root (two levels up from backend/scripts)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
-# Construct the absolute path to the virtual environment's Python interpreter
+# Construct the absolute path to the virtual environment's Python interpreter (relative to project root)
 VENV_PYTHON="$PROJECT_ROOT/backend/venv/bin/python"
 
 # Construct the absolute path to the target Python script
