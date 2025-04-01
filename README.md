@@ -21,7 +21,7 @@
     ```bash
     ./scripts/dev-env_init.sh
     ```
-    *Note: This script is safe to run multiple times but only creates venvs if they don't exist.*
+    *Note: This script is safe to run multiple times but only creates venvs if they don't exist. It installs the necessary Python packages into the `backend/venv`. Ensure this is run successfully before attempting to use the offline scripts mentioned in steps 6 and 7.*
 
 3.  **Configure API Key (`.env` file):**
     The initialization script (`dev-env_init.sh`) checks for the `backend/.env` file.
@@ -79,19 +79,22 @@
         *Note: This wrapper script directly executes the Python script using the interpreter inside `backend/venv`, so you don't need to activate the environment manually beforehand.*
 
 7.  **Pre-generate Document Cache (Optional, Offline):**
-    To improve the performance of the first chat request for each project, you can pre-generate a disk cache of the parsed document content. The backend will automatically use this cache if it's valid (checking file modification times). If the cache is missing or stale, the backend will parse documents on the fly during the chat request and update the disk cache.
+    To improve the performance of the first chat request for each project, you can pre-generate a disk cache of the parsed document content. The backend will automatically use this cache if it's valid (checking file modification times). If the cache is missing or stale, the backend will parse documents on the fly during the chat request and update the disk cache automatically.
+
+    First, make the wrapper script executable:
+    ```bash
+    chmod +x scripts/run_pregenerate_cache.sh
+    ```
 
     *   **For all projects:**
         ```bash
         # Run from the project root directory
-        # Make executable first: chmod +x scripts/run_pregenerate_cache.sh
         ./scripts/run_pregenerate_cache.sh
         ```
     *   **For a single project:**
         ```bash
         # Example for a project named 'MyProject'
         # Run from the project root directory
-        # Make executable first: chmod +x scripts/run_pregenerate_cache.sh
         ./scripts/run_pregenerate_cache.sh --project-directory projects/MyProject/
         ```
     *Note: This script uses the backend virtual environment via the wrapper. The cache is stored in `backend/.cache/parsed_docs/` and is ignored by Git.*
